@@ -1,3 +1,11 @@
+Fork from the official GROMACS github repository.
+The intent is to use non-mdrun tools from the gromacs ecosystem to prepare
+systems through VTX ui and generate files to run MD simulation externally.
+The idea is to compile gmx as a shared library, exposing region of interest
+for VTX use.
+
+                               * * * * *
+
                Welcome to the official version of GROMACS!
 
 If you are familiar with Unix, it should be fairly trivial to compile and
