@@ -5,7 +5,7 @@ from conan.tools.scm import Git
 
 class VtxGromacsRecipe(ConanFile):
     name = "vtx-gromacs"
-    version = "2023.4"
+    version = "2024.0"
     package_type = "library"
     
     settings = "os", "compiler", "build_type", "arch"
