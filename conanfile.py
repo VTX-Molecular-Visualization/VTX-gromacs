@@ -9,8 +9,8 @@ class VtxGromacsRecipe(ConanFile):
     package_type = "library"
     
     settings = "os", "compiler", "build_type", "arch"
-    options = {"shared": [True, False], "fPIC": [True, False]}
-    default_options = {"shared": False, "fPIC": True}
+    options = {"shared": [True], "fPIC": [True, False]}
+    default_options = {"shared": True, "fPIC": True}
     
     generators = "CMakeDeps", "CMakeToolchain"
     
@@ -22,8 +22,6 @@ class VtxGromacsRecipe(ConanFile):
 
     def layout(self):
         cmake_layout(self)    
-        # Add generated include dir for editable mode.
-        self.cpp.source.includedirs = ["include", os.path.join(self.folders.build, "include")]
         
     def build(self):
         cmake = CMake(self)
@@ -36,6 +34,4 @@ class VtxGromacsRecipe(ConanFile):
 
     def package_info(self):
         self.cpp_info.libs = ["vtx-gromacs"]
-        if self.settings.os == "Windows":
-            self.cpp_info.system_libs.append('ws2_32')
 
