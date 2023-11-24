@@ -26,6 +26,7 @@ class VtxGromacsRecipe(ConanFile):
         # However, gromacs keeps its header files alongside its sources, so we need to create an include folder ourselves
         #   On a personal note, I don't like this design and maybe we could change it someway in the future
         # copy(self, "*.h", os.path.join(self.recipe_folder, "src"), os.path.join(self.recipe_folder, "include"))
+        continue
 
     def layout(self):
         cmake_layout(self)    
