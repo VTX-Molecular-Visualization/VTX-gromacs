@@ -31,8 +31,10 @@ class VtxGromacsRecipe(ConanFile):
     def layout(self):
         cmake_layout(self)  
         # Add generated include dir for editable mode.
-        self.cpp.source.includedirs = ["include", os.path.join(self.recipe_folder, "api", "legacy", "include")]  
-        self.cpp.source.includedirs = ["include", os.path.join(self.recipe_folder, "src")]  
+        self.cpp.source.includedirs = [
+            os.path.join(self.recipe_folder, "api", "legacy", "include")
+            , os.path.join(self.recipe_folder, "src")
+        ]  
         
     def build(self):
         cmake = CMake(self)
