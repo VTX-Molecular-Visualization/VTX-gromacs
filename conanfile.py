@@ -4,6 +4,8 @@ from conan.tools.cmake import CMake, cmake_layout
 from conan.tools.scm import Git
 from conan.tools.files import copy
 
+from pathlib import Path
+
 class VtxGromacsRecipe(ConanFile):
     name = "vtx-gromacs"
     version = "2024.0"
@@ -26,7 +28,7 @@ class VtxGromacsRecipe(ConanFile):
         # However, gromacs keeps its header files alongside its sources, so we need to create an include folder ourselves
         #   On a personal note, I don't like this design and maybe we could change it someway in the future
         # copy(self, "*.h", os.path.join(self.recipe_folder, "src"), os.path.join(self.recipe_folder, "include"))
-        None
+        return
 
     def layout(self):
         cmake_layout(self)  
@@ -40,14 +42,21 @@ class VtxGromacsRecipe(ConanFile):
         cmake = CMake(self)
         cmake.configure()
         cmake.build()
+    
+        dest_libdir = os.path.join(self.build_folder, self.settings.get_safe("build_type", default="Release"))
+        copy(self, pattern="*.a"       , src=self.build_folder, dst=dest_libdir, keep_path=False)
+        copy(self, pattern="*.so"      , src=self.build_folder, dst=dest_libdir, keep_path=False)
+        copy(self, pattern="*.lib"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
+        copy(self, pattern="*.dylib"   , src=self.build_folder, dst=dest_libdir, keep_path=False)
+        copy(self, pattern="*.dll"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
 
     def package(self):
         cmake = CMake(self)
         cmake.install()
 
     def package_info(self):
+        self.cpp_info.libdirs = ['lib', os.path.join('lib', self.settings.get_safe("build_type", default="Release"))] 
+        self.cpp_info.libs = ["gromacs"]
         None
-        #self.cpp_info.libs = ["vtx-gromacs"]
         #self.cpp_info.names["generator_name"] = "Gromacs"
-        #self.cpp_info.libs = ["gromacs"] # If link fail, we should investigate this line
 
