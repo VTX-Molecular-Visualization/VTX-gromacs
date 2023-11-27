@@ -31,7 +31,7 @@ class VtxGromacsRecipe(ConanFile):
     def layout(self):
         cmake_layout(self)  
         # Add generated include dir for editable mode.
-        self.cpp.source.includedirs = ["include", os.path.join(self.package_folder, "api", "legacy", "include")]  
+        self.cpp.source.includedirs = ["include", os.path.join(self.recipe_folder, "api", "legacy", "include")]  
         
     def build(self):
         cmake = CMake(self)
@@ -43,7 +43,8 @@ class VtxGromacsRecipe(ConanFile):
         cmake.install()
 
     def package_info(self):
-        self.cpp_info.libs = ["vtx-gromacs"]
-        self.cpp_info.names["generator_name"] = "Gromacs"
+        None
+        #self.cpp_info.libs = ["vtx-gromacs"]
+        #self.cpp_info.names["generator_name"] = "Gromacs"
         #self.cpp_info.libs = ["gromacs"] # If link fail, we should investigate this line
 
