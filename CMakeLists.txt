@@ -49,17 +49,6 @@ if(POLICY CMP0146) # From CMake 3.27
     cmake_policy(SET CMP0146 OLD)
 endif()
 
-
-########################################################################
-# Global VTX build customization variables
-########################################################################
-
-set(GMX_FFT_LIBRARY "fftpack")
-
-########################################################################
-# ! VTX
-########################################################################
-
 # CMake modules/macros are in a subdirectory to keep this file cleaner
 # This needs to be set before project() in order to pick up toolchain files
 list(APPEND CMAKE_MODULE_PATH

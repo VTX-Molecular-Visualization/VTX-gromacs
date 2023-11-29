@@ -12,8 +12,14 @@ class VtxGromacsRecipe(ConanFile):
     package_type = "library"
     
     settings = "os", "compiler", "build_type", "arch"
-    options = {"shared": [True, False], "fPIC": [True, False]}
-    default_options = {"shared": False, "fPIC": True}
+    options = {
+        "shared": [True, False]
+        , "fPIC": [True, False]
+    }
+    default_options = {
+        "shared": False
+        , "fPIC": True
+    }
     
     generators = "CMakeDeps", "CMakeToolchain"
     
@@ -40,23 +46,22 @@ class VtxGromacsRecipe(ConanFile):
         
     def build(self):
         cmake = CMake(self)
-        cmake.configure()
+        cmake.configure(cli_args=["-DGMX_FFT_LIBRARY=fftpack"])
         cmake.build()
-    
+        
+        # Copies the bin files necessary to compile against gromacs into the root build dir
+        #  We need to do that as the lib subdir doesn't seems to be found from outside the package
         dest_libdir = os.path.join(self.build_folder, os.path.join(self.build_folder, self.cpp.build.libdirs[0]))
         copy(self, pattern="*.a"       , src=self.build_folder, dst=dest_libdir, keep_path=False)
         copy(self, pattern="*.so"      , src=self.build_folder, dst=dest_libdir, keep_path=False)
         copy(self, pattern="*.lib"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
         copy(self, pattern="*.dylib"   , src=self.build_folder, dst=dest_libdir, keep_path=False)
         copy(self, pattern="*.dll"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
-
+    
     def package(self):
         cmake = CMake(self)
         cmake.install()
 
     def package_info(self):
-        self.cpp_info.libdirs = ['lib', os.path.join('lib', os.path.join(self.build_folder, self.cpp.build.libdirs[0]))] 
         self.cpp_info.libs = ["gromacs"]
-        None
-        #self.cpp_info.names["generator_name"] = "Gromacs"
 
