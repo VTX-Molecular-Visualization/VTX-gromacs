@@ -43,7 +43,7 @@ class VtxGromacsRecipe(ConanFile):
         cmake.configure()
         cmake.build()
     
-        dest_libdir = os.path.join(self.build_folder, self.settings.get_safe("build_type", default="Release"))
+        dest_libdir = os.path.join(self.build_folder, os.path.join(self.build_folder, self.cpp.build.libdirs[0]))
         copy(self, pattern="*.a"       , src=self.build_folder, dst=dest_libdir, keep_path=False)
         copy(self, pattern="*.so"      , src=self.build_folder, dst=dest_libdir, keep_path=False)
         copy(self, pattern="*.lib"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
@@ -55,7 +55,7 @@ class VtxGromacsRecipe(ConanFile):
         cmake.install()
 
     def package_info(self):
-        self.cpp_info.libdirs = ['lib', os.path.join('lib', self.settings.get_safe("build_type", default="Release"))] 
+        self.cpp_info.libdirs = ['lib', os.path.join('lib', os.path.join(self.build_folder, self.cpp.build.libdirs[0]))] 
         self.cpp_info.libs = ["gromacs"]
         None
         #self.cpp_info.names["generator_name"] = "Gromacs"
