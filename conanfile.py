@@ -38,15 +38,33 @@ class VtxGromacsRecipe(ConanFile):
 
     def layout(self):
         cmake_layout(self)  
+        """
+        # self.folders.source = "."
+        # self.folders.build = os.path.join("build", str(self.settings.build_type))
+        # self.folders.generators = os.path.join(self.folders.build, "generators")
+        
+        # self.cpp.package.libs = ["gromacs", "gmx", "muparser"]
+        self.cpp.package.includedirs = [*self.cpp.package.includedirs, ".", os.path.join(self.folders.build, 'api', 'legacy', 'include'), os.path.join('api', 'legacy', 'include'), os.path.join(self.recipe_folder, "src"), os.path.join('src', 'include')]
+        self.cpp.source.includedirs = [*self.cpp.source.includedirs, *self.cpp.package.includedirs]
+        
+        # self.cpp.package.libdirs = ["lib"]  
+        
+        # self.cpp.build.libdirs = ["."]
+        return 
+        """
+        
         # Add generated include dir for editable mode.
+        generated_headers_path = os.path.join(self.folders.build , "api", "legacy", "include")
+        #Path("D:/log.log").write_text("generated_headers_path : <{}>".format(str(generated_headers_path)))
         self.cpp.source.includedirs = [
-            os.path.join(self.recipe_folder, "api", "legacy", "include")
-            , os.path.join(self.recipe_folder, "src")
+            os.path.join(self.recipe_folder, "src")
+            , os.path.join(self.recipe_folder, "api", "legacy", "include")
+            , generated_headers_path # doesn't work :'(
         ]  
         
     def build(self):
         cmake = CMake(self)
-        cmake.configure(cli_args=["-DGMX_FFT_LIBRARY=fftpack"])
+        cmake.configure(cli_args=["-DGMX_FFT_LIBRARY=fftpack"]) # build with slow fft algorithm. Since we won't use mdrun, it doesn't really matter
         cmake.build()
         
         # Copies the bin files necessary to compile against gromacs into the root build dir
@@ -66,5 +84,6 @@ class VtxGromacsRecipe(ConanFile):
         cmake.install()
 
     def package_info(self):
-        self.cpp_info.libs = ["gromacs"]
+        self.cpp_info.includedirs = ['include', os.path.join('api', 'legacy', 'include') ] 
+        self.cpp_info.libs = ["gromacs", "gmx", "muparser"]
 
