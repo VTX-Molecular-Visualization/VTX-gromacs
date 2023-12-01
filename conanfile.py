@@ -4,7 +4,6 @@ from conan.tools.cmake import CMake, cmake_layout
 from conan.tools.scm import Git
 from conan.tools.files import copy
 
-from pathlib import Path
 
 class VtxGromacsRecipe(ConanFile):
     name = "vtx-gromacs"
@@ -38,24 +37,9 @@ class VtxGromacsRecipe(ConanFile):
 
     def layout(self):
         cmake_layout(self)  
-        """
-        # self.folders.source = "."
-        # self.folders.build = os.path.join("build", str(self.settings.build_type))
-        # self.folders.generators = os.path.join(self.folders.build, "generators")
-        
-        # self.cpp.package.libs = ["gromacs", "gmx", "muparser"]
-        self.cpp.package.includedirs = [*self.cpp.package.includedirs, ".", os.path.join(self.folders.build, 'api', 'legacy', 'include'), os.path.join('api', 'legacy', 'include'), os.path.join(self.recipe_folder, "src"), os.path.join('src', 'include')]
-        self.cpp.source.includedirs = [*self.cpp.source.includedirs, *self.cpp.package.includedirs]
-        
-        # self.cpp.package.libdirs = ["lib"]  
-        
-        # self.cpp.build.libdirs = ["."]
-        return 
-        """
         
         # Add generated include dir for editable mode.
-        generated_headers_path = os.path.join(self.folders.build , "api", "legacy", "include")
-        #Path("D:/log.log").write_text("generated_headers_path : <{}>".format(str(generated_headers_path)))
+        generated_headers_path = os.path.join(self.folders.build , "api", "legacy", "include") # TODO : test usefullness ?
         self.cpp.source.includedirs = [
             os.path.join(self.recipe_folder, "src")
             , os.path.join(self.recipe_folder, "api", "legacy", "include")
