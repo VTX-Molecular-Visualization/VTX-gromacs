@@ -4,6 +4,7 @@ from conan.tools.cmake import CMake, cmake_layout
 from conan.tools.scm import Git
 from conan.tools.files import copy
 
+from pathlib import Path
 
 class VtxGromacsRecipe(ConanFile):
     name = "vtx-gromacs"
@@ -43,15 +44,16 @@ class VtxGromacsRecipe(ConanFile):
         self.cpp.source.includedirs = [
             os.path.join(self.recipe_folder, "src")
             , os.path.join(self.recipe_folder, "api", "legacy", "include")
-            , generated_headers_path # doesn't work :'(
+            , generated_headers_path 
         ]  
-        self.cpp.source.components["gmx"].includedirs         = self.cpp.source.includedirs
-        self.cpp.source.components["gromacs"].includedirs     = self.cpp.source.includedirs
-        self.cpp.source.components["muparser"].includedirs    = self.cpp.source.includedirs
-        bt = "." if self.settings.os != "Windows" else str(self.settings.build_type)
-        self.cpp.build.components["gmx"].libdirs = [bt]
-        self.cpp.build.components["gromacs"].libdirs = [bt]
-        self.cpp.build.components["muparser"].libdirs = [bt]
+        
+        self.cpp.build.components["gmx"     ].libdirs = self.cpp.build.libdirs
+        self.cpp.build.components["gromacs" ].libdirs = self.cpp.build.libdirs
+        self.cpp.build.components["muparser"].libdirs = self.cpp.build.libdirs
+        
+        self.cpp.source.components["gmx"     ].includedirs = self.cpp.source.includedirs
+        self.cpp.source.components["gromacs" ].includedirs = self.cpp.source.includedirs
+        self.cpp.source.components["muparser"].includedirs = self.cpp.source.includedirs
         
         
     def build(self):
@@ -78,18 +80,16 @@ class VtxGromacsRecipe(ConanFile):
     def package_info(self):
         self.cpp_info.includedirs = ['include', os.path.join('api', 'legacy', 'include') ]
         
-        bt = "." if self.settings.os != "Windows" else str(self.settings.build_type)
-        self.cpp_info.components["gmx"].libdirs = [bt]
-        self.cpp_info.components["gromacs"].libdirs = [bt]
-        self.cpp_info.components["muparser"].libdirs = [bt]
-        
         self.cpp_info.components["muparser"].libs = ["muparser"]
-        self.cpp_info.components["bye"].set_property("cmake_target_name", "vtx-gromacs::muparser")
+        self.cpp_info.components["muparser"].set_property("cmake_target_name", "vtx-gromacs::muparser")
         
         self.cpp_info.components["gromacs"].libs = ["gromacs"]
         self.cpp_info.components["gromacs"].requires = ["muparser"]
+        self.cpp_info.components["gromacs"].set_property("cmake_target_name", "vtx-gromacs::gromacs")
         
         self.cpp_info.components["gmx"].libs = ["gmx"]
         self.cpp_info.components["gmx"].requires = ["gromacs"]
+        self.cpp_info.components["gmx"].set_property("cmake_target_name", "vtx-gromacs::gmx")
+        
         
         
