@@ -4,8 +4,6 @@ from conan.tools.cmake import CMake, cmake_layout
 from conan.tools.scm import Git
 from conan.tools.files import copy
 
-from pathlib import Path
-
 class VtxGromacsRecipe(ConanFile):
     name = "vtx-gromacs"
     version = "2024.0"
@@ -28,13 +26,6 @@ class VtxGromacsRecipe(ConanFile):
     def config_options(self):
         if self.settings.os == "Windows":
             del self.options.fPIC
-
-    def generate(self):
-        # Conan seems to automatically add [recipe_folder]/include to the cmake generated include list for this package.
-        # However, gromacs keeps its header files alongside its sources, so we need to create an include folder ourselves
-        #   On a personal note, I don't like this design and maybe we could change it someway in the future
-        # copy(self, "*.h", os.path.join(self.recipe_folder, "src"), os.path.join(self.recipe_folder, "include"))
-        return
 
     def layout(self):
         cmake_layout(self)  
@@ -86,7 +77,7 @@ class VtxGromacsRecipe(ConanFile):
         self.cpp_info.components["gromacs"].libs = ["gromacs"]
         self.cpp_info.components["gromacs"].requires = ["muparser"]
         self.cpp_info.components["gromacs"].set_property("cmake_target_name", "vtx-gromacs::gromacs")
-        
+        return 
         self.cpp_info.components["gmx"].libs = ["gmx"]
         self.cpp_info.components["gmx"].requires = ["gromacs"]
         self.cpp_info.components["gmx"].set_property("cmake_target_name", "vtx-gromacs::gmx")
