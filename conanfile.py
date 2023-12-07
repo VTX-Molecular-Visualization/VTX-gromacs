@@ -77,10 +77,5 @@ class VtxGromacsRecipe(ConanFile):
         self.cpp_info.components["gromacs"].libs = ["gromacs"]
         self.cpp_info.components["gromacs"].requires = ["muparser"]
         self.cpp_info.components["gromacs"].set_property("cmake_target_name", "vtx-gromacs::gromacs")
-        return 
-        self.cpp_info.components["gmx"].libs = ["gmx"]
-        self.cpp_info.components["gmx"].requires = ["gromacs"]
-        self.cpp_info.components["gmx"].set_property("cmake_target_name", "vtx-gromacs::gmx")
-        
         
         
