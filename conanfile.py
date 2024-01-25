@@ -61,21 +61,23 @@ class VtxGromacsRecipe(ConanFile):
             copy(self, pattern="*.lib"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
             copy(self, pattern="*.dylib"   , src=self.build_folder, dst=dest_libdir, keep_path=False)
             copy(self, pattern="*.dll"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
+            copy(self, pattern="*.exe"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
         except :
             None
     
     def package(self):
         cmake = CMake(self)
         cmake.install()
+        copy(self, os.path.join("bin","*.dll"),  os.path.join(self.package_folder, "external", "tools", "mdprep", "gromacs"))
 
     def package_info(self):
         self.cpp_info.includedirs = ['include', os.path.join('api', 'legacy', 'include') ]
         
         self.cpp_info.components["muparser"].libs = ["muparser"]
-        self.cpp_info.components["muparser"].set_property("cmake_target_name", "vtx-gromacs::muparser")
+        self.cpp_info.components["muparser"].set_property("cmake_targetName", "vtx-gromacs::muparser")
         
         self.cpp_info.components["gromacs"].libs = ["gromacs"]
         self.cpp_info.components["gromacs"].requires = ["muparser"]
-        self.cpp_info.components["gromacs"].set_property("cmake_target_name", "vtx-gromacs::gromacs")
+        self.cpp_info.components["gromacs"].set_property("cmake_targetName", "vtx-gromacs::gromacs")
         
         
