@@ -3,6 +3,7 @@ from conan import ConanFile
 from conan.tools.cmake import CMake, cmake_layout
 from conan.tools.scm import Git
 from conan.tools.files import copy
+from pathlib import Path
 
 class VtxGromacsRecipe(ConanFile):
     name = "vtx-gromacs"
@@ -46,6 +47,8 @@ class VtxGromacsRecipe(ConanFile):
         self.cpp.source.components["gromacs" ].includedirs = self.cpp.source.includedirs
         self.cpp.source.components["muparser"].includedirs = self.cpp.source.includedirs
         
+    def _generated_cmake_prefix(self):
+        return "gmxbin-"
         
     def build(self):
         cmake = CMake(self)
@@ -55,6 +58,13 @@ class VtxGromacsRecipe(ConanFile):
         # Copies the bin files necessary to compile against gromacs into the root build dir
         #  We need to do that as the lib subdir doesn't seems to be found from outside the package
         dest_libdir = os.path.join(self.build_folder, os.path.join(self.build_folder, self.cpp.build.libdirs[0]))
+        cmake_dir = os.path.join(self.recipe_folder, "cmake", "out")
+        if not Path(cmake_dir).exists():
+            Path(cmake_dir).mkdir()
+        cmake_file_name = f"{self._generated_cmake_prefix()}{self.settings.build_type}.cmake"
+        cmake_file_path = os.path.join(cmake_dir, cmake_file_name)
+        cmake_file_content = """vtx_register_build_directory_copy("%s" "external/tools/mdprep/gromacs")""" % ((Path(dest_libdir) / "bin").as_posix())
+        Path(cmake_file_path).write_text(cmake_file_content)
         try : # copy function throws when it tries to copy a file that is already there. 
             copy(self, pattern="*.a"       , src=self.build_folder, dst=dest_libdir, keep_path=False)
             copy(self, pattern="*.so"      , src=self.build_folder, dst=dest_libdir, keep_path=False)
@@ -62,6 +72,7 @@ class VtxGromacsRecipe(ConanFile):
             copy(self, pattern="*.dylib"   , src=self.build_folder, dst=dest_libdir, keep_path=False)
             copy(self, pattern="*.dll"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
             copy(self, pattern="*.exe"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
+            
         except :
             None
     
@@ -79,5 +90,9 @@ class VtxGromacsRecipe(ConanFile):
         self.cpp_info.components["gromacs"].libs = ["gromacs"]
         self.cpp_info.components["gromacs"].requires = ["muparser"]
         self.cpp_info.components["gromacs"].set_property("cmake_targetName", "vtx-gromacs::gromacs")
+        
+        # Give away cmake code to be executed by the consumer of this package
+        generated_cmake = "cmake/out/%s%s.cmake" % (self._generated_cmake_prefix(), self.settings.build_type)
+        self.cpp_info.set_property("cmake_build_modules", [generated_cmake])
         
         
