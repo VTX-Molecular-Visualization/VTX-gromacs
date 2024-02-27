@@ -21,6 +21,7 @@ lib*.pc
 .tox
 .cproject
 .vscode
+**/out/
 build
 /*build*
 _build
