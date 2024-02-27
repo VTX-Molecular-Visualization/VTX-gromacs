@@ -21,7 +21,7 @@ class VtxGromacsRecipe(ConanFile):
     
     generators = "CMakeDeps", "CMakeToolchain"
     
-    exports_sources = "CMakeLists.txt", "src/*", "cmake/*"
+    exports_sources = "CMakeLists.txt", "src/*", "cmake/*", "share/*", "tests/*", "api/*"
         
     def config_options(self):
         if self.settings.os == "Windows":
