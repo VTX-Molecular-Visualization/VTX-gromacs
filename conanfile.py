@@ -58,9 +58,13 @@ class VtxGromacsRecipe(ConanFile):
         # Copies the bin files necessary to compile against gromacs into the root build dir
         #  We need to do that as the lib subdir doesn't seems to be found from outside the package
         dest_libdir = os.path.join(self.build_folder, os.path.join(self.build_folder, self.cpp.build.libdirs[0]))
-        cmake_dir = os.path.join(self.recipe_folder, "cmake", "out")
+        cmake_dir = os.path.join(self.recipe_folder, "cmake")
         if not Path(cmake_dir).exists():
             Path(cmake_dir).mkdir()
+        cmake_dir = os.path.join(cmake_dir, "out")
+        if not Path(cmake_dir).exists():
+            Path(cmake_dir).mkdir()
+        
         cmake_file_name = f"{self._generated_cmake_prefix()}{self.settings.build_type}.cmake"
         cmake_file_path = os.path.join(cmake_dir, cmake_file_name)
         cmake_file_content = """vtx_register_build_directory_copy("%s" "external/tools/mdprep/gromacs")""" % ((Path(dest_libdir) / "bin").as_posix())
