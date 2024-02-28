@@ -83,7 +83,7 @@ class VtxGromacsRecipe(ConanFile):
     def package(self):
         cmake = CMake(self)
         cmake.install()
-        copy(self, pattern=os.path.join("bin","*.dll"), src=self.build_folder, sdst=os.path.join(self.package_folder, "external", "tools", "mdprep", "gromacs"))
+        copy(self, pattern=os.path.join("bin","*.dll"), src=self.build_folder, dst=os.path.join(self.package_folder, "external", "tools", "mdprep", "gromacs"))
 
     def package_info(self):
         self.cpp_info.includedirs = ['include', os.path.join('api', 'legacy', 'include') ]
