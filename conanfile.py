@@ -60,8 +60,6 @@ class VtxGromacsRecipe(ConanFile):
             , "-DBUILD_SHARED_LIBS=off"
             , "-DGMX_PREFER_STATIC_LIBS=on"
             , "-DGMX_BUILD_SHARED_EXE=OFF"
-            # , "-DCMAKE_SHARED_LINKER_FLAGS_RELWITHASSERT=\"-Wl,--as-needed\""
-            # , "CMAKE_SHARED_LINKER_FLAGS_REFERENCE=\"\""
         ]) # build with slow fft algorithm. Since we won't use mdrun, it doesn't really matter
         cmake.build()
         

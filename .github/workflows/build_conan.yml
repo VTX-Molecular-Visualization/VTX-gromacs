@@ -35,9 +35,9 @@ jobs:
       working-directory: ${{env.CMAKELISTS_DIR}}
       run: conan create . --settings=compiler.cppstd=20
                
-#    - name: Upload dependencies
-#      working-directory: ${{env.CMAKELISTS_DIR}}
-#      run: |
-#        conan remote add --insecure cano7782 ${{ secrets.CONAN_SERVER_HOST }}
-#        conan remote login -p ${{ secrets.CONAN_SERVER_PASSWORD }} cano7782 ${{ secrets.CONAN_SERVER_USER }}
-#        conan upload gromacs -r=cano7782 --force
+    - name: Upload dependencies
+      working-directory: ${{env.CMAKELISTS_DIR}}
+      run: |
+        conan remote add --insecure cano7782 ${{ secrets.CONAN_SERVER_HOST }}
+        conan remote login -p ${{ secrets.CONAN_SERVER_PASSWORD }} cano7782 ${{ secrets.CONAN_SERVER_USER }}
+        conan upload gromacs -r=cano7782 --force
