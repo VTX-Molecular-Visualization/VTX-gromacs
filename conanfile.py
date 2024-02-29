@@ -49,6 +49,9 @@ class VtxGromacsRecipe(ConanFile):
         
     def _generated_cmake_prefix(self):
         return "gmxbin-"
+    
+    def build_requirements(self):
+        self.tool_requires("cmake/3.23")
         
     def build(self):
         cmake = CMake(self)
