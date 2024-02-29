@@ -6,7 +6,7 @@ from conan.tools.files import copy
 from pathlib import Path
 
 class VtxGromacsRecipe(ConanFile):
-    name = "vtx-gromacs"
+    name = "gromacs"
     version = "2024.0"
     package_type = "library"
     
