@@ -55,7 +55,14 @@ class VtxGromacsRecipe(ConanFile):
         
     def build(self):
         cmake = CMake(self)
-        cmake.configure(cli_args=["-DGMX_FFT_LIBRARY=fftpack", "-DBUILD_SHARED_LIBS=on", "-DGMX_PREFER_STATIC_LIBS=OFF", "-DGMX_BUILD_SHARED_EXE=OFF", "-DCMAKE_SHARED_LINKER_FLAGS_RELWITHASSERT=\"-Wl,--as-needed\"", "CMAKE_SHARED_LINKER_FLAGS_REFERENCE=\"\"" ]) # build with slow fft algorithm. Since we won't use mdrun, it doesn't really matter
+        cmake.configure(cli_args=[
+            "-DGMX_FFT_LIBRARY=fftpack"
+            , "-DBUILD_SHARED_LIBS=off"
+            , "-DGMX_PREFER_STATIC_LIBS=on"
+            , "-DGMX_BUILD_SHARED_EXE=OFF"
+            # , "-DCMAKE_SHARED_LINKER_FLAGS_RELWITHASSERT=\"-Wl,--as-needed\""
+            # , "CMAKE_SHARED_LINKER_FLAGS_REFERENCE=\"\""
+        ]) # build with slow fft algorithm. Since we won't use mdrun, it doesn't really matter
         cmake.build()
         
         # Copies the bin files necessary to compile against gromacs into the root build dir
