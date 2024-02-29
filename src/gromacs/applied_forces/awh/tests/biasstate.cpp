@@ -217,7 +217,7 @@ TEST_P(UserInputTest, ParsesUser3DInput)
     std::string     correctFormatMessage;
     /* Get a data point for each AWH grid point so that they all get data. */
     EXPECT_NO_THROW(mapGridToDataGrid(
-            &gridIndexToDataIndex_, data_, numRows_, filename_, grid, correctFormatMessage));
+            &gridIndexToDataIndex_, data_, numRows_, filename_.string(), grid, correctFormatMessage));
     EXPECT_EQ(numRows_, 30);
     EXPECT_EQ(numColumns_, 8);
 }
