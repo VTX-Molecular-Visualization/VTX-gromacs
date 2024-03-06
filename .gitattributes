@@ -1,4 +1,5 @@
 # Generic rules
+*       text=auto
 *.c     filter=complete_formatting gmx-doxygen
 *.cpp   filter=complete_formatting gmx-doxygen
 *.hpp   filter=complete_formatting gmx-doxygen
