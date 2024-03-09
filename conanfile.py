@@ -52,25 +52,12 @@ class VtxGromacsRecipe(ConanFile):
         ]) # build with slow fft algorithm. Since we won't use mdrun, it doesn't really matter
         cmake.build()
         
-        try : # copy function throws when it tries to copy a file that is already there. 
-            copy(self, pattern="*.a"       , src=self.build_folder, dst=dest_libdir, keep_path=False)
-            copy(self, pattern="*.so"      , src=self.build_folder, dst=dest_libdir, keep_path=False)
-            copy(self, pattern="*.lib"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
-            copy(self, pattern="*.dylib"   , src=self.build_folder, dst=dest_libdir, keep_path=False)
-            copy(self, pattern="*.dll"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
-            copy(self, pattern="*.exe"     , src=self.build_folder, dst=dest_libdir, keep_path=False)
-            
-        except :
-            None
-    
     def package(self):
-        cmake = CMake(self)
-        cmake.install()
         copy(self, pattern="*.dll", src=os.path.join(self.build_folder, "bin"), dst=os.path.join(self.package_folder, "external", "tools", "mdprep", "gromacs"))
         copy(self, pattern="*.exe", src=os.path.join(self.build_folder, "bin"), dst=os.path.join(self.package_folder, "external", "tools", "mdprep", "gromacs"))
         copy(self, pattern="*.so", src=os.path.join(self.build_folder, "bin"), dst=os.path.join(self.package_folder, "external", "tools", "mdprep", "gromacs"))
         copy(self, pattern="gmx", src=os.path.join(self.build_folder, "bin"), dst=os.path.join(self.package_folder, "external", "tools", "mdprep", "gromacs"))
-        copy(self, pattern=os.path.join("share","top", "*"), src=self.recipe_folder, dst=os.path.join(self.package_folder, "data", "tools", "mdprep", "gromacs", "top"))
+        copy(self, pattern="*", src=os.path.join(self.source_folder, "share","top"), dst=os.path.join(self.package_folder, "data", "tools", "mdprep", "gromacs", "top"))
 
     def package_info(self):
         self.cpp_info.includedirs = ['include', os.path.join('api', 'legacy', 'include') ]
