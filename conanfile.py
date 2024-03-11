@@ -29,15 +29,7 @@ class VtxGromacsRecipe(ConanFile):
             del self.options.fPIC
 
     def layout(self):
-        cmake_layout(self)  
-            
-        self.cpp.build.components["gmx"     ].libdirs = self.cpp.build.libdirs
-        self.cpp.build.components["gromacs" ].libdirs = self.cpp.build.libdirs
-        self.cpp.build.components["muparser"].libdirs = self.cpp.build.libdirs
-        
-        self.cpp.source.components["gmx"     ].includedirs = self.cpp.source.includedirs
-        self.cpp.source.components["gromacs" ].includedirs = self.cpp.source.includedirs
-        self.cpp.source.components["muparser"].includedirs = self.cpp.source.includedirs
+        cmake_layout(self)
     
     def build_requirements(self):
         self.tool_requires("cmake/3.27.0")
@@ -62,12 +54,6 @@ class VtxGromacsRecipe(ConanFile):
     def package_info(self):
         self.cpp_info.includedirs = ['include', os.path.join('api', 'legacy', 'include') ]
         
-        self.cpp_info.components["muparser"].libs = ["muparser"]
-        self.cpp_info.components["muparser"].set_property("cmake_targetName", "gromacs::muparser")
-        
-        self.cpp_info.components["gromacs"].libs = ["gromacs"]
-        self.cpp_info.components["gromacs"].requires = ["muparser"]
-        self.cpp_info.components["gromacs"].set_property("cmake_targetName", "gromacs::gromacs")
         
         
         
