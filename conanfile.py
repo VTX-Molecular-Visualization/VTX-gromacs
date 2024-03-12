@@ -9,6 +9,7 @@ class VtxGromacsRecipe(ConanFile):
     name = "gromacs"
     version = "2024.0"
     package_type = "library"
+    revision_mode = "scm"
     
     settings = "os", "compiler", "build_type", "arch"
     options = {
