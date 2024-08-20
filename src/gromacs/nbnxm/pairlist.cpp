@@ -39,12 +39,19 @@
 #include "config.h"
 
 #include <cassert>
+#include <climits>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
+#include <array>
+#include <filesystem>
+#include <string>
+#include <type_traits>
 
-#include "gromacs/domdec/domdec_struct.h"
+#include "gromacs/domdec/domdec_zones.h"
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
@@ -56,36 +63,42 @@
 #include "gromacs/mdtypes/nblist.h"
 #include "gromacs/nbnxm/atomdata.h"
 #include "gromacs/nbnxm/gpu_data_mgmt.h"
+#include "gromacs/nbnxm/grid.h"
+#include "gromacs/nbnxm/nbnxm.h"
+#include "gromacs/nbnxm/nbnxm_enums.h"
+#include "gromacs/nbnxm/pairlistparams.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/simd/simd.h"
 #include "gromacs/simd/vector_operations.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/bitmask.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/gmxomp.h"
 #include "gromacs/utility/listoflists.h"
+#include "gromacs/utility/range.h"
 #include "gromacs/utility/smalloc.h"
 
-#include "boundingboxes.h"
+#include "boundingbox.h"
+#include "boundingbox_simd.h"
+#include "boundingboxdistance.h"
 #include "clusterdistancekerneltype.h"
 #include "exclusionchecker.h"
 #include "gridset.h"
 #include "nbnxm_geometry.h"
 #include "nbnxm_simd.h"
+#include "pairlist_imask.h"
+#include "pairlist_simd_kernel.h"
 #include "pairlistset.h"
 #include "pairlistsets.h"
 #include "pairlistwork.h"
 #include "pairsearch.h"
+#include "simd_energy_accumulator.h"
 
-using namespace gmx; // TODO: Remove when this file is moved into gmx namespace
-
-using BoundingBox   = Nbnxm::BoundingBox;   // TODO: Remove when refactoring this file
-using BoundingBox1D = Nbnxm::BoundingBox1D; // TODO: Remove when refactoring this file
-
-using Grid = Nbnxm::Grid; // TODO: Remove when refactoring this file
-
-// Convenience alias for partial Nbnxn namespace usage
-using InteractionLocality = gmx::InteractionLocality;
+namespace gmx
+{
 
 // Whether we use SIMD to compute the distance between a pair of clusters for the GPU pair list
 #if GMX_SIMD
@@ -102,135 +115,9 @@ constexpr bool c_useSimdGpuClusterPairDistance = false;
  */
 constexpr bool c_pbcShiftBackward = true;
 
-/* Layout for the nonbonded NxN pair lists */
-enum class NbnxnLayout
-{
-    NoSimd4x4, // i-cluster size 4, j-cluster size 4
-    Simd4xN,   // i-cluster size 4, j-cluster size SIMD width
-    Simd2xNN,  // i-cluster size 4, j-cluster size half SIMD width
-    Gpu8x8x8   // i-cluster size 8, j-cluster size 8 + super-clustering
-};
-
-#if GMX_SIMD && GMX_USE_SIMD_KERNELS
-/* Returns the j-cluster size */
-template<NbnxnLayout layout>
-static constexpr int jClusterSize()
-{
-    static_assert(layout == NbnxnLayout::NoSimd4x4 || layout == NbnxnLayout::Simd4xN
-                          || layout == NbnxnLayout::Simd2xNN,
-                  "Currently jClusterSize only supports CPU layouts");
-
-    return layout == NbnxnLayout::Simd4xN
-                   ? GMX_SIMD_REAL_WIDTH
-                   : (layout == NbnxnLayout::Simd2xNN ? GMX_SIMD_REAL_WIDTH / 2 : c_nbnxnCpuIClusterSize);
-}
-
-/*! \brief Returns the j-cluster index given the i-cluster index.
- *
- * \tparam    jClusterSize      The number of atoms in a j-cluster
- * \tparam    jSubClusterIndex  The j-sub-cluster index (0/1), used when size(j-cluster) <
- *                              size(i-cluster)
- * \param[in] ci                The i-cluster index
- */
-template<int jClusterSize, int jSubClusterIndex>
-static inline int cjFromCi(int ci)
-{
-    static_assert(jClusterSize == c_nbnxnCpuIClusterSize / 2 || jClusterSize == c_nbnxnCpuIClusterSize
-                          || jClusterSize == c_nbnxnCpuIClusterSize * 2,
-                  "Only j-cluster sizes 2, 4 and 8 are currently implemented");
-
-    static_assert(jSubClusterIndex == 0 || jSubClusterIndex == 1,
-                  "Only sub-cluster indices 0 and 1 are supported");
-
-    if (jClusterSize == c_nbnxnCpuIClusterSize / 2)
-    {
-        if (jSubClusterIndex == 0)
-        {
-            return ci << 1;
-        }
-        else
-        {
-            return ((ci + 1) << 1) - 1;
-        }
-    }
-    else if (jClusterSize == c_nbnxnCpuIClusterSize)
-    {
-        return ci;
-    }
-    else
-    {
-        return ci >> 1;
-    }
-}
-
-/*! \brief Returns the j-cluster index given the i-cluster index.
- *
- * \tparam    layout            The pair-list layout
- * \tparam    jSubClusterIndex  The j-sub-cluster index (0/1), used when size(j-cluster) <
- *                              size(i-cluster)
- * \param[in] ci                The i-cluster index
- */
-template<NbnxnLayout layout, int jSubClusterIndex>
-static inline int cjFromCi(int ci)
-{
-    constexpr int clusterSize = jClusterSize<layout>();
-
-    return cjFromCi<clusterSize, jSubClusterIndex>(ci);
-}
-
-/* Returns the nbnxn coordinate data index given the i-cluster index */
-template<NbnxnLayout layout>
-static inline int xIndexFromCi(int ci)
-{
-    constexpr int clusterSize = jClusterSize<layout>();
-
-    static_assert(clusterSize == c_nbnxnCpuIClusterSize / 2 || clusterSize == c_nbnxnCpuIClusterSize
-                          || clusterSize == c_nbnxnCpuIClusterSize * 2,
-                  "Only j-cluster sizes 2, 4 and 8 are currently implemented");
-
-    if (clusterSize <= c_nbnxnCpuIClusterSize)
-    {
-        /* Coordinates are stored packed in groups of 4 */
-        return ci * STRIDE_P4;
-    }
-    else
-    {
-        /* Coordinates packed in 8, i-cluster size is half the packing width */
-        return (ci >> 1) * STRIDE_P8 + (ci & 1) * (c_packX8 >> 1);
-    }
-}
-
-/* Returns the nbnxn coordinate data index given the j-cluster index */
-template<NbnxnLayout layout>
-static inline int xIndexFromCj(int cj)
-{
-    constexpr int clusterSize = jClusterSize<layout>();
-
-    static_assert(clusterSize == c_nbnxnCpuIClusterSize / 2 || clusterSize == c_nbnxnCpuIClusterSize
-                          || clusterSize == c_nbnxnCpuIClusterSize * 2,
-                  "Only j-cluster sizes 2, 4 and 8 are currently implemented");
-
-    if (clusterSize == c_nbnxnCpuIClusterSize / 2)
-    {
-        /* Coordinates are stored packed in groups of 4 */
-        return (cj >> 1) * STRIDE_P4 + (cj & 1) * (c_packX4 >> 1);
-    }
-    else if (clusterSize == c_nbnxnCpuIClusterSize)
-    {
-        /* Coordinates are stored packed in groups of 4 */
-        return cj * STRIDE_P4;
-    }
-    else
-    {
-        /* Coordinates are stored packed in groups of 8 */
-        return cj * STRIDE_P8;
-    }
-}
-#endif // GMX_SIMD_HAVE_REAL
-
 static constexpr int sizeNeededForBufferFlags(const int numAtoms)
 {
-    return (numAtoms + NBNXN_BUFFERFLAG_SIZE - 1) / NBNXN_BUFFERFLAG_SIZE;
+    return divideRoundUp(numAtoms, NBNXN_BUFFERFLAG_SIZE);
 }
 
 // Resets current flags to 0 and adds more flags if needed.
@@ -275,12 +162,12 @@ template<int dim>
 static void
 get_cell_range(real b0, real b1, const Grid::Dimensions& jGridDims, real d2, real rlist, int* cf, int* cl)
 {
-    real listRangeBBToCell2 = gmx::square(listRangeForBoundingBoxToGridCell(rlist, jGridDims));
+    real listRangeBBToCell2 = square(listRangeForBoundingBoxToGridCell(rlist, jGridDims));
     real distanceInCells    = (b0 - jGridDims.lowerCorner[dim]) * jGridDims.invCellSize[dim];
     *cf                     = std::max(static_cast<int>(distanceInCells), 0);
 
     while (*cf > 0
-           && d2 + gmx::square((b0 - jGridDims.lowerCorner[dim]) - (*cf - 1 + 1) * jGridDims.cellSize[dim])
+           && d2 + square((b0 - jGridDims.lowerCorner[dim]) - (*cf - 1 + 1) * jGridDims.cellSize[dim])
                       < listRangeBBToCell2)
     {
         (*cf)--;
@@ -289,186 +176,18 @@ get_cell_range(real b0, real b1, const Grid::Dimensions& jGridDims, real d2, rea
     *cl = std::min(static_cast<int>((b1 - jGridDims.lowerCorner[dim]) * jGridDims.invCellSize[dim]),
                    jGridDims.numCells[dim] - 1);
     while (*cl < jGridDims.numCells[dim] - 1
-           && d2 + gmx::square((*cl + 1) * jGridDims.cellSize[dim] - (b1 - jGridDims.lowerCorner[dim]))
+           && d2 + square((*cl + 1) * jGridDims.cellSize[dim] - (b1 - jGridDims.lowerCorner[dim]))
                       < listRangeBBToCell2)
     {
         (*cl)++;
     }
 }
 
-/* Reference code calculating the distance^2 between two bounding boxes */
-/*
-   static float box_dist2(float bx0, float bx1, float by0,
-                       float by1, float bz0, float bz1,
-                       const BoundingBox *bb)
-   {
-    float d2;
-    float dl, dh, dm, dm0;
-
-    d2 = 0;
-
-    dl  = bx0 - bb->upper.x;
-    dh  = bb->lower.x - bx1;
-    dm  = std::max(dl, dh);
-    dm0 = std::max(dm, 0.0f);
-    d2 += dm0*dm0;
-
-    dl  = by0 - bb->upper.y;
-    dh  = bb->lower.y - by1;
-    dm  = std::max(dl, dh);
-    dm0 = std::max(dm, 0.0f);
-    d2 += dm0*dm0;
-
-    dl  = bz0 - bb->upper.z;
-    dh  = bb->lower.z - bz1;
-    dm  = std::max(dl, dh);
-    dm0 = std::max(dm, 0.0f);
-    d2 += dm0*dm0;
-
-    return d2;
-   }
- */
-
-#if !NBNXN_SEARCH_BB_SIMD4
-
-/*! \brief Plain C code calculating the distance^2 between two bounding boxes in xyz0 format
- *
- * \param[in] bb_i  First bounding box
- * \param[in] bb_j  Second bounding box
- */
-static float clusterBoundingBoxDistance2(const BoundingBox& bb_i, const BoundingBox& bb_j)
-{
-    float dl  = bb_i.lower.x - bb_j.upper.x;
-    float dh  = bb_j.lower.x - bb_i.upper.x;
-    float dm  = std::max(dl, dh);
-    float dm0 = std::max(dm, 0.0F);
-    float d2  = dm0 * dm0;
-
-    dl  = bb_i.lower.y - bb_j.upper.y;
-    dh  = bb_j.lower.y - bb_i.upper.y;
-    dm  = std::max(dl, dh);
-    dm0 = std::max(dm, 0.0F);
-    d2 += dm0 * dm0;
-
-    dl  = bb_i.lower.z - bb_j.upper.z;
-    dh  = bb_j.lower.z - bb_i.upper.z;
-    dm  = std::max(dl, dh);
-    dm0 = std::max(dm, 0.0F);
-    d2 += dm0 * dm0;
-
-    return d2;
-}
-
-#else /* NBNXN_SEARCH_BB_SIMD4 */
-
-/*! \brief 4-wide SIMD code calculating the distance^2 between two bounding boxes in xyz0 format
- *
- * \param[in] bb_i  First bounding box, should be aligned for 4-wide SIMD
- * \param[in] bb_j  Second bounding box, should be aligned for 4-wide SIMD
- */
-static float clusterBoundingBoxDistance2(const BoundingBox& bb_i, const BoundingBox& bb_j)
-{
-    // TODO: During SIMDv2 transition only some archs use namespace (remove when done)
-    using namespace gmx;
-
-    const Simd4Float bb_i_S0 = load4(bb_i.lower.ptr());
-    const Simd4Float bb_i_S1 = load4(bb_i.upper.ptr());
-    const Simd4Float bb_j_S0 = load4(bb_j.lower.ptr());
-    const Simd4Float bb_j_S1 = load4(bb_j.upper.ptr());
-
-    const Simd4Float dl_S = bb_i_S0 - bb_j_S1;
-    const Simd4Float dh_S = bb_j_S0 - bb_i_S1;
-
-    const Simd4Float dm_S  = max(dl_S, dh_S);
-    const Simd4Float dm0_S = max(dm_S, simd4SetZeroF());
-
-    return dotProduct(dm0_S, dm0_S);
-}
-
-/* Calculate bb bounding distances of bb_i[si,...,si+3] and store them in d2 */
-template<int boundingBoxStart>
-static inline void gmx_simdcall clusterBoundingBoxDistance2_xxxx_simd4_inner(const float*     bb_i,
-                                                                             float*           d2,
-                                                                             const Simd4Float xj_l,
-                                                                             const Simd4Float yj_l,
-                                                                             const Simd4Float zj_l,
-                                                                             const Simd4Float xj_h,
-                                                                             const Simd4Float yj_h,
-                                                                             const Simd4Float zj_h)
-{
-    constexpr int stride = c_packedBoundingBoxesDimSize;
-
-    const int shi = boundingBoxStart * Nbnxm::c_numBoundingBoxBounds1D * DIM;
-
-    const Simd4Float zero = setZero();
-
-    const Simd4Float xi_l = load4(bb_i + shi + 0 * stride);
-    const Simd4Float yi_l = load4(bb_i + shi + 1 * stride);
-    const Simd4Float zi_l = load4(bb_i + shi + 2 * stride);
-    const Simd4Float xi_h = load4(bb_i + shi + 3 * stride);
-    const Simd4Float yi_h = load4(bb_i + shi + 4 * stride);
-    const Simd4Float zi_h = load4(bb_i + shi + 5 * stride);
-
-    const Simd4Float dx_0 = xi_l - xj_h;
-    const Simd4Float dy_0 = yi_l - yj_h;
-    const Simd4Float dz_0 = zi_l - zj_h;
-
-    const Simd4Float dx_1 = xj_l - xi_h;
-    const Simd4Float dy_1 = yj_l - yi_h;
-    const Simd4Float dz_1 = zj_l - zi_h;
-
-    const Simd4Float mx = max(dx_0, dx_1);
-    const Simd4Float my = max(dy_0, dy_1);
-    const Simd4Float mz = max(dz_0, dz_1);
-
-    const Simd4Float m0x = max(mx, zero);
-    const Simd4Float m0y = max(my, zero);
-    const Simd4Float m0z = max(mz, zero);
-
-    const Simd4Float d2x = m0x * m0x;
-    const Simd4Float d2y = m0y * m0y;
-    const Simd4Float d2z = m0z * m0z;
-
-    const Simd4Float d2s = d2x + d2y;
-    const Simd4Float d2t = d2s + d2z;
-
-    store4(d2 + boundingBoxStart, d2t);
-}
-
-/* 4-wide SIMD code for nsi bb distances for bb format xxxxyyyyzzzz */
-static void clusterBoundingBoxDistance2_xxxx_simd4(const float* bb_j, const int nsi, const float* bb_i, float* d2)
-{
-    constexpr int stride = c_packedBoundingBoxesDimSize;
-
-    // TODO: During SIMDv2 transition only some archs use namespace (remove when done)
-    using namespace gmx;
-
-    const Simd4Float xj_l = Simd4Float(bb_j[0 * stride]);
-    const Simd4Float yj_l = Simd4Float(bb_j[1 * stride]);
-    const Simd4Float zj_l = Simd4Float(bb_j[2 * stride]);
-    const Simd4Float xj_h = Simd4Float(bb_j[3 * stride]);
-    const Simd4Float yj_h = Simd4Float(bb_j[4 * stride]);
-    const Simd4Float zj_h = Simd4Float(bb_j[5 * stride]);
-
-    /* Here we "loop" over si (0,stride) from 0 to nsi with step stride.
-     * But as we know the number of iterations is 1 or 2, we unroll manually.
-     */
-    clusterBoundingBoxDistance2_xxxx_simd4_inner<0>(bb_i, d2, xj_l, yj_l, zj_l, xj_h, yj_h, zj_h);
-    if (stride < nsi)
-    {
-        clusterBoundingBoxDistance2_xxxx_simd4_inner<stride>(bb_i, d2, xj_l, yj_l, zj_l, xj_h, yj_h, zj_h);
-    }
-}
-
-#endif /* NBNXN_SEARCH_BB_SIMD4 */
-
 #if GMX_SIMD
-// clang-format off
-CLANG_DIAGNOSTIC_IGNORE(-Wunneeded-internal-declaration)
-// clang-format on
+CLANG_DIAGNOSTIC_IGNORE("-Wunneeded-internal-declaration")
 #endif
 // Returns whether any atom pair from two clusters is within distance sqrt(rlist2)
-static inline bool clusterpairInRangePlainC(const NbnxnPairlistGpuWork& work,
+static inline bool clusterpairInRangePlainC(const NbnxmPairlistGpuWork& work,
                                             const int                   si,
                                             const int                   csj,
                                             const int                   jCoordStride,
@@ -484,8 +203,8 @@ static inline bool clusterpairInRangePlainC(const NbnxnPairlistGpuWork& work,
         {
             int j0 = (csj * c_nbnxnGpuClusterSize + j) * jCoordStride;
 
-            real d2 = gmx::square(x_i[i0] - x_j[j0]) + gmx::square(x_i[i0 + 1] - x_j[j0 + 1])
-                      + gmx::square(x_i[i0 + 2] - x_j[j0 + 2]);
+            real d2 = square(x_i[i0] - x_j[j0]) + square(x_i[i0 + 1] - x_j[j0 + 1])
+                      + square(x_i[i0 + 2] - x_j[j0 + 2]);
 
             if (d2 < rlist2)
             {
@@ -520,7 +239,7 @@ gmx_unused static inline T simdLoad(std::enable_if_t<std::is_same_v<T, Simd4Real
 
 // Returns whether any atom pair from two clusters is within distance sqrt(rlist2), uses SIMD or SIMD4
 template<int simdWidth, typename T, typename BoolT>
-static inline bool clusterpairInRangeSimd(const NbnxnPairlistGpuWork& work,
+static inline bool clusterpairInRangeSimd(const NbnxmPairlistGpuWork& work,
                                           int                         si,
                                           int                         csj,
                                           int                         jCoordStride,
@@ -619,7 +338,7 @@ static inline bool clusterpairInRangeSimd(const NbnxnPairlistGpuWork& work,
 #endif // GMX_SIMD
 
 // Returns whether any atom between a GPU cluster pair is within range
-static inline bool clusterpairInRange(const NbnxnPairlistGpuWork& work,
+static inline bool clusterpairInRange(const NbnxmPairlistGpuWork& work,
                                       const int                   si,
                                       const int                   csj,
                                       const int                   jCoordStride,
@@ -648,16 +367,16 @@ static inline bool clusterpairInRange(const NbnxnPairlistGpuWork& work,
 #endif
 }
 
-NbnxnPairlistCpu::NbnxnPairlistCpu() :
-    na_ci(c_nbnxnCpuIClusterSize),
+NbnxnPairlistCpu::NbnxnPairlistCpu(const int iClusterSize) :
+    na_ci(iClusterSize),
     na_cj(0),
     rlist(0),
     ncjInUse(0),
-    work(std::make_unique<NbnxnPairlistCpuWork>())
+    work(std::make_unique<NbnxmPairlistCpuWork>(iClusterSize))
 {
 }
 
-NbnxnPairlistGpu::NbnxnPairlistGpu(gmx::PinningPolicy pinningPolicy) :
+NbnxnPairlistGpu::NbnxnPairlistGpu(PinningPolicy pinningPolicy) :
     na_ci(c_nbnxnGpuClusterSize),
     na_cj(c_nbnxnGpuClusterSize),
     na_sc(c_gpuNumClusterPerCell * c_nbnxnGpuClusterSize),
@@ -666,16 +385,17 @@ NbnxnPairlistGpu::NbnxnPairlistGpu(gmx::PinningPolicy pinningPolicy) :
     cjPacked(pinningPolicy),
     excl({}, { pinningPolicy }),
     nci_tot(0),
-    work(std::make_unique<NbnxnPairlistGpuWork>())
+    work(std::make_unique<NbnxmPairlistGpuWork>())
 {
     static_assert(c_nbnxnGpuNumClusterPerSupercluster == c_gpuNumClusterPerCell,
                   "The search code assumes that the a super-cluster matches a search grid cell");
 
-    static_assert(sizeof(cjPacked.list_[0].imei[0].imask) * 8 >= c_nbnxnGpuJgroupSize * c_gpuNumClusterPerCell,
+    static_assert(sizeof(cjPacked.list_[0].imei[0].imask) * CHAR_BIT
+                          >= c_nbnxnGpuJgroupSize * c_gpuNumClusterPerCell,
                   "The i super-cluster cluster interaction mask does not contain a sufficient "
                   "number of bits");
 
-    static_assert(sizeof(excl[0]) * 8 >= c_nbnxnGpuJgroupSize * c_gpuNumClusterPerCell,
+    static_assert(sizeof(excl[0]) * CHAR_BIT >= c_nbnxnGpuJgroupSize * c_gpuNumClusterPerCell,
                   "The GPU exclusion mask does not contain a sufficient number of bits");
 
     // We always want a first entry without any exclusions
@@ -704,22 +424,30 @@ PairlistSet::PairlistSet(const PairlistParams& pairlistParams) :
 
     if (isCpuType_)
     {
-        cpuLists_.resize(numLists);
+        cpuLists_.reserve(numLists);
+        for (int i = 0; i < numLists; i++)
+        {
+            cpuLists_.emplace_back(IClusterSizePerListType[pairlistParams.pairlistType]);
+        }
         if (numLists > 1)
         {
-            cpuListsWork_.resize(numLists);
+            cpuListsWork_.reserve(numLists);
+            for (int i = 0; i < numLists; i++)
+            {
+                cpuListsWork_.emplace_back(IClusterSizePerListType[pairlistParams.pairlistType]);
+            }
         }
     }
     else
     {
         /* Only list 0 is used on the GPU, use normal allocation for i>0 */
-        gpuLists_.emplace_back(gmx::PinningPolicy::PinnedIfSupported);
+        gpuLists_.emplace_back(PinningPolicy::PinnedIfSupported);
         /* Lists 0 to numLists are use for constructing lists in parallel
          * on the CPU using numLists threads (and then merged into list 0).
          */
         for (int i = 1; i < numLists; i++)
         {
-            gpuLists_.emplace_back(gmx::PinningPolicy::CannotBePinned);
+            gpuLists_.emplace_back(PinningPolicy::CannotBePinned);
         }
     }
     if (params_.haveFep_)
@@ -745,10 +473,7 @@ PairlistSet::PairlistSet(const PairlistParams& pairlistParams) :
 }
 
 /* Print statistics of a pair list, used for debug output */
-static void print_nblist_statistics(FILE*                   fp,
-                                    const NbnxnPairlistCpu& nbl,
-                                    const Nbnxm::GridSet&   gridSet,
-                                    const real              rl)
+static void print_nblist_statistics(FILE* fp, const NbnxnPairlistCpu& nbl, const GridSet& gridSet, const real rl)
 {
     const Grid&             grid = gridSet.grid(0);
     const Grid::Dimensions& dims = grid.dimensions();
@@ -777,8 +502,8 @@ static void print_nblist_statistics(FILE*                   fp,
             "nbl average j cell list length %.1f\n",
             0.25 * nbl.ncjInUse / std::max(static_cast<double>(nbl.ci.size()), 1.0));
 
-    int cs[gmx::c_numShiftVectors] = { 0 };
-    int npexcl                     = 0;
+    int cs[c_numShiftVectors] = { 0 };
+    int npexcl                = 0;
     for (const nbnxn_ci_t& ciEntry : nbl.ci)
     {
         cs[ciEntry.shift & NBNXN_CI_SHIFT] += ciEntry.cj_ind_end - ciEntry.cj_ind_start;
@@ -791,11 +516,11 @@ static void print_nblist_statistics(FILE*                   fp,
         }
     }
     fprintf(fp,
-            "nbl cell pairs, total: %zu excl: %d %.1f%%\n",
+            "nbl cell pairs, total: %td excl: %d %.1f%%\n",
             nbl.cj.size(),
             npexcl,
             100 * npexcl / std::max(static_cast<double>(nbl.cj.size()), 1.0));
-    for (int s = 0; s < gmx::c_numShiftVectors; s++)
+    for (int s = 0; s < c_numShiftVectors; s++)
     {
         if (cs[s] > 0)
         {
@@ -805,16 +530,13 @@ static void print_nblist_statistics(FILE*                   fp,
 }
 
 /* Print statistics of a pair lists, used for debug output */
-static void print_nblist_statistics(FILE*                   fp,
-                                    const NbnxnPairlistGpu& nbl,
-                                    const Nbnxm::GridSet&   gridSet,
-                                    const real              rl)
+static void print_nblist_statistics(FILE* fp, const NbnxnPairlistGpu& nbl, const GridSet& gridSet, const real rl)
 {
     const Grid&             grid = gridSet.grid(0);
     const Grid::Dimensions& dims = grid.dimensions();
 
     fprintf(fp,
-            "nbl nsci %zu ncjPacked %zu nsi %d excl4 %zu\n",
+            "nbl nsci %zu numPackedJClusters %td nsi %d excl4 %zu\n",
             nbl.sci.size(),
             nbl.cjPacked.size(),
             nbl.nci_tot,
@@ -937,50 +659,6 @@ static void setSelfAndNewtonExclusionsGpu(NbnxnPairlistGpu* nbl,
     }
 }
 
-/* Returns a diagonal or off-diagonal interaction mask for plain C lists */
-static unsigned int get_imask(gmx_bool rdiag, int ci, int cj)
-{
-    return (rdiag && ci == cj ? NBNXN_INTERACTION_MASK_DIAG : NBNXN_INTERACTION_MASK_ALL);
-}
-
-/* Returns a diagonal or off-diagonal interaction mask for cj-size=2 */
-gmx_unused static unsigned int get_imask_simd_j2(gmx_bool rdiag, int ci, int cj)
-{
-    return (rdiag && ci * 2 == cj ? NBNXN_INTERACTION_MASK_DIAG_J2_0
-                                  : (rdiag && ci * 2 + 1 == cj ? NBNXN_INTERACTION_MASK_DIAG_J2_1
-                                                               : NBNXN_INTERACTION_MASK_ALL));
-}
-
-/* Returns a diagonal or off-diagonal interaction mask for cj-size=4 */
-gmx_unused static unsigned int get_imask_simd_j4(gmx_bool rdiag, int ci, int cj)
-{
-    return (rdiag && ci == cj ? NBNXN_INTERACTION_MASK_DIAG : NBNXN_INTERACTION_MASK_ALL);
-}
-
-/* Returns a diagonal or off-diagonal interaction mask for cj-size=8 */
-gmx_unused static unsigned int get_imask_simd_j8(gmx_bool rdiag, int ci, int cj)
-{
-    return (rdiag && ci == cj * 2 ? NBNXN_INTERACTION_MASK_DIAG_J8_0
-                                  : (rdiag && ci == cj * 2 + 1 ? NBNXN_INTERACTION_MASK_DIAG_J8_1
-                                                               : NBNXN_INTERACTION_MASK_ALL));
-}
-
-#if GMX_SIMD
-#    if GMX_SIMD_REAL_WIDTH == 2
-#        define get_imask_simd_4xn get_imask_simd_j2
-#    endif
-#    if GMX_SIMD_REAL_WIDTH == 4
-#        define get_imask_simd_4xn get_imask_simd_j4
-#    endif
-#    if GMX_SIMD_REAL_WIDTH == 8
-#        define get_imask_simd_4xn get_imask_simd_j8
-#        define get_imask_simd_2xnn get_imask_simd_j4
-#    endif
-#    if GMX_SIMD_REAL_WIDTH == 16
-#        define get_imask_simd_2xnn get_imask_simd_j8
-#    endif
-#endif
-
 /* Plain C code for checking and adding cluster-pairs to the list.
  *
  * \param[in]     gridj               The j-grid
@@ -1008,6 +686,9 @@ static void makeClusterListSimple(const Grid&              jGrid,
     const BoundingBox* gmx_restrict bb_ci = nbl->work->iClusterData.bb.data();
     const real* gmx_restrict        x_ci  = nbl->work->iClusterData.x.data();
 
+    constexpr int c_iClusterSize = sc_iClusterSize(NbnxmKernelType::Cpu4x4_PlainC);
+    constexpr int c_jClusterSize = sc_jClusterSize(NbnxmKernelType::Cpu4x4_PlainC);
+
     bool InRange = false;
     while (!InRange && jclusterFirst <= jclusterLast)
     {
@@ -1026,22 +707,21 @@ static void makeClusterListSimple(const Grid&              jGrid,
         else if (d2 < rlist2)
         {
             int cjf_gl = jGrid.cellOffset() + jclusterFirst;
-            for (int i = 0; i < c_nbnxnCpuIClusterSize && !InRange; i++)
+            for (int i = 0; i < c_iClusterSize && !InRange; i++)
             {
-                for (int j = 0; j < c_nbnxnCpuIClusterSize; j++)
+                for (int j = 0; j < c_jClusterSize; j++)
                 {
-                    InRange =
-                            InRange
-                            || (gmx::square(x_ci[i * STRIDE_XYZ + XX]
-                                            - x_j[(cjf_gl * c_nbnxnCpuIClusterSize + j) * STRIDE_XYZ + XX])
-                                        + gmx::square(x_ci[i * STRIDE_XYZ + YY]
-                                                      - x_j[(cjf_gl * c_nbnxnCpuIClusterSize + j) * STRIDE_XYZ + YY])
-                                        + gmx::square(x_ci[i * STRIDE_XYZ + ZZ]
-                                                      - x_j[(cjf_gl * c_nbnxnCpuIClusterSize + j) * STRIDE_XYZ + ZZ])
-                                < rlist2);
+                    InRange = InRange
+                              || (square(x_ci[i * STRIDE_XYZ + XX]
+                                         - x_j[(cjf_gl * c_jClusterSize + j) * STRIDE_XYZ + XX])
+                                          + square(x_ci[i * STRIDE_XYZ + YY]
+                                                   - x_j[(cjf_gl * c_jClusterSize + j) * STRIDE_XYZ + YY])
+                                          + square(x_ci[i * STRIDE_XYZ + ZZ]
+                                                   - x_j[(cjf_gl * c_jClusterSize + j) * STRIDE_XYZ + ZZ])
+                                  < rlist2);
                 }
             }
-            *numDistanceChecks += c_nbnxnCpuIClusterSize * c_nbnxnCpuIClusterSize;
+            *numDistanceChecks += c_iClusterSize * c_jClusterSize;
         }
         if (!InRange)
         {
@@ -1071,22 +751,21 @@ static void makeClusterListSimple(const Grid&              jGrid,
         else if (d2 < rlist2)
         {
             int cjl_gl = jGrid.cellOffset() + jclusterLast;
-            for (int i = 0; i < c_nbnxnCpuIClusterSize && !InRange; i++)
+            for (int i = 0; i < c_iClusterSize && !InRange; i++)
             {
-                for (int j = 0; j < c_nbnxnCpuIClusterSize; j++)
+                for (int j = 0; j < c_jClusterSize; j++)
                 {
-                    InRange =
-                            InRange
-                            || (gmx::square(x_ci[i * STRIDE_XYZ + XX]
-                                            - x_j[(cjl_gl * c_nbnxnCpuIClusterSize + j) * STRIDE_XYZ + XX])
-                                        + gmx::square(x_ci[i * STRIDE_XYZ + YY]
-                                                      - x_j[(cjl_gl * c_nbnxnCpuIClusterSize + j) * STRIDE_XYZ + YY])
-                                        + gmx::square(x_ci[i * STRIDE_XYZ + ZZ]
-                                                      - x_j[(cjl_gl * c_nbnxnCpuIClusterSize + j) * STRIDE_XYZ + ZZ])
-                                < rlist2);
+                    InRange = InRange
+                              || (square(x_ci[i * STRIDE_XYZ + XX]
+                                         - x_j[(cjl_gl * c_jClusterSize + j) * STRIDE_XYZ + XX])
+                                          + square(x_ci[i * STRIDE_XYZ + YY]
+                                                   - x_j[(cjl_gl * c_jClusterSize + j) * STRIDE_XYZ + YY])
+                                          + square(x_ci[i * STRIDE_XYZ + ZZ]
+                                                   - x_j[(cjl_gl * c_jClusterSize + j) * STRIDE_XYZ + ZZ])
+                                  < rlist2);
                 }
             }
-            *numDistanceChecks += c_nbnxnCpuIClusterSize * c_nbnxnCpuIClusterSize;
+            *numDistanceChecks += c_iClusterSize * c_jClusterSize;
         }
         if (!InRange)
         {
@@ -1100,21 +779,15 @@ static void makeClusterListSimple(const Grid&              jGrid,
         {
             /* Store cj and the interaction mask */
             nbnxn_cj_t cjEntry;
-            cjEntry.cj   = jGrid.cellOffset() + jcluster;
-            cjEntry.excl = get_imask(excludeSubDiagonal, icluster, jcluster);
+            cjEntry.cj = jGrid.cellOffset() + jcluster;
+            cjEntry.excl =
+                    getImask<c_iClusterSize, c_jClusterSize>(excludeSubDiagonal, icluster, jcluster);
             nbl->cj.list_.push_back(cjEntry);
         }
         /* Increase the closing index in the i list */
         nbl->ci.back().cj_ind_end = nbl->cj.size();
     }
 }
-
-#if GMX_HAVE_NBNXM_SIMD_4XM
-#    include "pairlist_simd_4xm.h"
-#endif
-#if GMX_HAVE_NBNXM_SIMD_2XMM
-#    include "pairlist_simd_2xmm.h"
-#endif
 
 /* Plain C or SIMD4 code for making a pair list of super-cell sci vs scj.
  * Checks bounding box distances and possibly atom pair distances.
@@ -1131,7 +804,7 @@ static void make_cluster_list_supersub(const Grid&       iGrid,
                                        const float       rbb2,
                                        int*              numDistanceChecks)
 {
-    NbnxnPairlistGpuWork& work = *nbl->work;
+    NbnxmPairlistGpuWork& work = *nbl->work;
 
 #if NBNXN_BBXXXX
     const float* pbb_ci = work.iSuperClusterData.bbPacked.data();
@@ -1262,8 +935,7 @@ static void make_cluster_list_supersub(const Grid&       iGrid,
             nbl->nci_tot += npair;
 
             /* Increase the closing index in i super-cell list */
-            nbl->sci.back().cjPackedEnd =
-                    (nbl->work->cj_ind + c_nbnxnGpuJgroupSize - 1) / c_nbnxnGpuJgroupSize;
+            nbl->sci.back().cjPackedEnd = divideRoundUp(nbl->work->cj_ind, c_nbnxnGpuJgroupSize);
         }
     }
 }
@@ -1365,7 +1037,7 @@ static inline int findJClusterInJList(int jCluster, const JListRanges& ranges, c
  *
  * All the atom-pair exclusions from the topology are converted to
  * exclusion masks in the simple pairlist. */
-static void setExclusionsForIEntry(const Nbnxm::GridSet&   gridSet,
+static void setExclusionsForIEntry(const GridSet&          gridSet,
                                    NbnxnPairlistCpu*       nbl,
                                    gmx_bool                diagRemoved,
                                    int                     na_cj_2log,
@@ -1383,8 +1055,8 @@ static void setExclusionsForIEntry(const Nbnxm::GridSet&   gridSet,
 
     const int iCluster = currentIEntry.ci;
 
-    gmx::ArrayRef<const int> cell        = gridSet.cells();
-    gmx::ArrayRef<const int> atomIndices = gridSet.atomIndices();
+    ArrayRef<const int> cell        = gridSet.cells();
+    ArrayRef<const int> atomIndices = gridSet.atomIndices();
 
     /* Loop over the atoms in the i-cluster */
     for (int i = 0; i < nbl->na_ci; i++)
@@ -1435,9 +1107,9 @@ static void setExclusionsForIEntry(const Nbnxm::GridSet&   gridSet,
     }
 }
 
-static gmx::RVec getCoordinate(const nbnxn_atomdata_t& nbat, const int a)
+static RVec getCoordinate(const nbnxn_atomdata_t& nbat, const int a)
 {
-    gmx::RVec x;
+    RVec x;
 
     switch (nbat.XFormat)
     {
@@ -1473,6 +1145,29 @@ static gmx::RVec getCoordinate(const nbnxn_atomdata_t& nbat, const int a)
     }
 
     return x;
+}
+
+//! Returns the j/i cluster size ratio for the geometry of a grid
+static KernelLayoutClusterRatio layoutClusterRatio(const Grid::Geometry& geometry)
+{
+    if (geometry.numAtomsJCluster == geometry.numAtomsICluster)
+    {
+        return KernelLayoutClusterRatio::JSizeEqualsISize;
+    }
+    else if (geometry.numAtomsJCluster == 2 * geometry.numAtomsICluster)
+    {
+        return KernelLayoutClusterRatio::JSizeIsDoubleISize;
+    }
+    else if (2 * geometry.numAtomsJCluster == geometry.numAtomsICluster)
+    {
+        return KernelLayoutClusterRatio::JSizeIsHalfISize;
+    }
+    else
+    {
+        GMX_ASSERT(false, "Unhandled cluster ratio");
+
+        return KernelLayoutClusterRatio::JSizeEqualsISize;
+    }
 }
 
 /* Add a new i-entry to the FEP list and copy the i-properties */
@@ -1541,20 +1236,19 @@ const int max_nrj_fep = 40;
  * \param[in] jGrid        The grid with j-atoms
  * \param[in,out] nlist    FEP list to add the FEP pairs to
  */
-static void make_fep_list(gmx::ArrayRef<const int> atomIndices,
-                          const nbnxn_atomdata_t*  nbat,
-                          NbnxnPairlistCpu*        nbl,
-                          gmx_bool                 bDiagRemoved,
-                          const real               shx,
-                          const real               shy,
-                          const real               shz,
-                          const real gmx_unused    rlist_fep2,
-                          const Grid&              iGrid,
-                          const Grid&              jGrid,
-                          t_nblist*                nlist)
+static void make_fep_list(ArrayRef<const int>     atomIndices,
+                          const nbnxn_atomdata_t* nbat,
+                          NbnxnPairlistCpu*       nbl,
+                          gmx_bool                bDiagRemoved,
+                          const real              shx,
+                          const real              shy,
+                          const real              shz,
+                          const real gmx_unused   rlist_fep2,
+                          const Grid&             iGrid,
+                          const Grid&             jGrid,
+                          t_nblist*               nlist)
 {
-    int gid_i  = 0;
-    int gid_cj = 0;
+    const KernelLayoutClusterRatio jGridClusterRatio = layoutClusterRatio(jGrid.geometry());
 
     // Exclude pairs from the current (ie. last) i-cluster entry in
     // the list
@@ -1581,28 +1275,26 @@ static void make_fep_list(gmx::ArrayRef<const int> atomIndices,
         reallocate_nblist(nlist);
     }
 
-    const int numAtomsJCluster = jGrid.geometry().numAtomsJCluster;
+    const int c_iClusterSize = jGrid.geometry().numAtomsICluster;
+    const int c_jClusterSize = jGrid.geometry().numAtomsJCluster;
 
     const nbnxn_atomdata_t::Params& nbatParams = nbat->params();
 
-    const int ngid = nbatParams.nenergrp;
+    const int numEnergyGroups = nbatParams.numEnergyGroups;
 
     /* TODO: Consider adding a check in grompp and changing this to an assert */
-    const int numBitsInEnergyGroupIdsForAtomsInJCluster = sizeof(gid_cj) * 8;
-    if (ngid * numAtomsJCluster > numBitsInEnergyGroupIdsForAtomsInJCluster)
+    constexpr int numBitsInEnergyGroupIdsForAtomsInJCluster = sizeof(*nlist->gid.data()) * CHAR_BIT;
+    if (numEnergyGroups * c_jClusterSize > numBitsInEnergyGroupIdsForAtomsInJCluster)
     {
         gmx_fatal(FARGS,
-                  "The Verlet scheme with %dx%d kernels and free-energy only supports up to %zu "
+                  "The Verlet scheme with %dx%d kernels and free-energy only supports up to %d "
                   "energy groups",
                   iGrid.geometry().numAtomsICluster,
-                  numAtomsJCluster,
-                  (sizeof(gid_cj) * 8) / numAtomsJCluster);
+                  c_jClusterSize,
+                  numBitsInEnergyGroupIdsForAtomsInJCluster / c_jClusterSize);
     }
 
-    const int egp_shift = nbatParams.neg_2log;
-    const int egp_mask  = (1 << egp_shift) - 1;
-
-    const gmx::RVec shift = { shx, shy, shz };
+    const RVec shift = { shx, shy, shz };
 
     /* Loop over the atoms in the i sub-cell */
     bool bFEP_i_all = true;
@@ -1612,7 +1304,7 @@ static void make_fep_list(gmx::ArrayRef<const int> atomIndices,
         const int ai    = atomIndices[ind_i];
         if (ai >= 0)
         {
-            const gmx::RVec xiShifted = getCoordinate(*nbat, ind_i) + shift;
+            const RVec xiShifted = getCoordinate(*nbat, ind_i) + shift;
 
             int nri                = nlist->nri;
             nlist->jindex[nri + 1] = nlist->jindex[nri];
@@ -1632,38 +1324,29 @@ static void make_fep_list(gmx::ArrayRef<const int> atomIndices,
                 nlist->excl_fep.resize(nlist->maxnrj);
             }
 
-            if (ngid > 1)
+            int gid_i = 0;
+            if (numEnergyGroups > 1)
             {
-                gid_i = (nbatParams.energrp[ci] >> (egp_shift * i)) & egp_mask;
+                gid_i = nbatParams.energyGroupsPerCluster->getEnergyGroup(ci, i);
             }
 
             for (int cj_ind = cj_ind_start; cj_ind < cj_ind_end; cj_ind++)
             {
                 unsigned int fep_cj = 0U;
-                gid_cj              = 0;
 
                 const int cja = nbl->cj.cj(cj_ind);
 
-                if (numAtomsJCluster == jGrid.geometry().numAtomsICluster)
+                if (jGridClusterRatio == KernelLayoutClusterRatio::JSizeEqualsISize)
                 {
                     const int cjr = cja - jGrid.cellOffset();
                     fep_cj        = jGrid.fepBits(cjr);
-                    if (ngid > 1)
-                    {
-                        gid_cj = nbatParams.energrp[cja];
-                    }
                 }
-                else if (2 * numAtomsJCluster == jGrid.geometry().numAtomsICluster)
+                else if (jGridClusterRatio == KernelLayoutClusterRatio::JSizeIsHalfISize)
                 {
                     const int cjr = cja - jGrid.cellOffset() * 2;
                     /* Extract half of the ci fep/energrp mask */
-                    fep_cj = (jGrid.fepBits(cjr >> 1) >> ((cjr & 1) * numAtomsJCluster))
-                             & ((1 << numAtomsJCluster) - 1);
-                    if (ngid > 1)
-                    {
-                        gid_cj = nbatParams.energrp[cja >> 1] >> ((cja & 1) * numAtomsJCluster * egp_shift)
-                                 & ((1 << (numAtomsJCluster * egp_shift)) - 1);
-                    }
+                    fep_cj = (jGrid.fepBits(cjr >> 1) >> ((cjr & 1) * c_jClusterSize))
+                             & ((1 << c_jClusterSize) - 1);
                 }
                 else
                 {
@@ -1671,12 +1354,6 @@ static void make_fep_list(gmx::ArrayRef<const int> atomIndices,
                     /* Combine two ci fep masks/energrp */
                     fep_cj = jGrid.fepBits(cjr * 2)
                              + (jGrid.fepBits(cjr * 2 + 1) << jGrid.geometry().numAtomsICluster);
-                    if (ngid > 1)
-                    {
-                        gid_cj = nbatParams.energrp[cja * 2]
-                                 + (nbatParams.energrp[cja * 2 + 1]
-                                    << (jGrid.geometry().numAtomsICluster * egp_shift));
-                    }
                 }
 
                 if (bFEP_i || fep_cj != 0)
@@ -1693,10 +1370,24 @@ static void make_fep_list(gmx::ArrayRef<const int> atomIndices,
                                     norm2(xiShifted - getCoordinate(*nbat, ind_j)) < rlist_fep2;
                             if (isWithinFepListRange)
                             {
-                                if (ngid > 1)
+                                if (numEnergyGroups > 1)
                                 {
-                                    const int gid_j = (gid_cj >> (j * egp_shift)) & egp_mask;
-                                    const int gid   = GID(gid_i, gid_j, ngid);
+                                    int gid_j;
+                                    if (jGridClusterRatio == KernelLayoutClusterRatio::JSizeEqualsISize)
+                                    {
+                                        gid_j = nbatParams.energyGroupsPerCluster->getEnergyGroup(cja, j);
+                                    }
+                                    else if (jGridClusterRatio == KernelLayoutClusterRatio::JSizeIsHalfISize)
+                                    {
+                                        gid_j = nbatParams.energyGroupsPerCluster->getEnergyGroup(
+                                                cja >> 1, (cja & 1) * 2 + j);
+                                    }
+                                    else
+                                    {
+                                        gid_j = nbatParams.energyGroupsPerCluster->getEnergyGroup(
+                                                cja * 2 + j / c_iClusterSize, j & (c_iClusterSize - 1));
+                                    }
+                                    const int gid = GID(gid_i, gid_j, numEnergyGroups);
 
                                     if (nlist->nrj > nlist->jindex[nri] && nlist->gid[nri] != gid)
                                     {
@@ -1773,17 +1464,17 @@ static inline int a_mod_wj(int a)
 }
 
 /* As make_fep_list above, but for super/sub lists. */
-static void make_fep_list(gmx::ArrayRef<const int> atomIndices,
-                          const nbnxn_atomdata_t*  nbat,
-                          NbnxnPairlistGpu*        nbl,
-                          gmx_bool                 bDiagRemoved,
-                          real                     shx,
-                          real                     shy,
-                          real                     shz,
-                          real                     rlist_fep2,
-                          const Grid&              iGrid,
-                          const Grid&              jGrid,
-                          t_nblist*                nlist)
+static void make_fep_list(ArrayRef<const int>     atomIndices,
+                          const nbnxn_atomdata_t* nbat,
+                          NbnxnPairlistGpu*       nbl,
+                          gmx_bool                bDiagRemoved,
+                          real                    shx,
+                          real                    shy,
+                          real                    shz,
+                          real                    rlist_fep2,
+                          const Grid&             iGrid,
+                          const Grid&             jGrid,
+                          t_nblist*               nlist)
 {
     // Exclude pairs from the current (ie. last) i-super-cluster entry
     // in the list
@@ -1945,7 +1636,7 @@ static void make_fep_list(gmx::ArrayRef<const int> atomIndices,
  *
  * All the atom-pair exclusions from the topology are converted to
  * exclusion masks in the simple pairlist. */
-static void setExclusionsForIEntry(const Nbnxm::GridSet&   gridSet,
+static void setExclusionsForIEntry(const GridSet&          gridSet,
                                    NbnxnPairlistGpu*       nbl,
                                    gmx_bool                diagRemoved,
                                    int gmx_unused          na_cj_2log,
@@ -1972,8 +1663,8 @@ static void setExclusionsForIEntry(const Nbnxm::GridSet&   gridSet,
 
     const int iSuperCluster = currentIEntry.sci;
 
-    gmx::ArrayRef<const int> atomIndices = gridSet.atomIndices();
-    gmx::ArrayRef<const int> cell        = gridSet.cells();
+    ArrayRef<const int> atomIndices = gridSet.atomIndices();
+    ArrayRef<const int> cell        = gridSet.cells();
 
     /* Loop over the atoms in the i super-cluster */
     for (int i = 0; i < c_superClusterSize; i++)
@@ -2073,7 +1764,7 @@ static void addNewIEntry(NbnxnPairlistGpu* nbl, int sci, int shift, int gmx_unus
 /* Sort the simple j-list cj on exclusions.
  * Entries with exclusions will all be sorted to the beginning of the list.
  */
-static void sort_cj_excl(nbnxn_cj_t* cj, int ncj, NbnxnPairlistCpuWork* work)
+static void sort_cj_excl(nbnxn_cj_t* cj, int ncj, NbnxmPairlistCpuWork* work)
 {
     work->cj.resize(ncj);
 
@@ -2244,8 +1935,8 @@ static void closeIEntry(NbnxnPairlistGpu* nbl, int nsp_max_av, gmx_bool progBal,
         /* We can only have complete blocks of 4 j-entries in a list,
          * so round the count up before closing.
          */
-        int ncjPacked     = (nbl->work->cj_ind + c_nbnxnGpuJgroupSize - 1) / c_nbnxnGpuJgroupSize;
-        nbl->work->cj_ind = ncjPacked * c_nbnxnGpuJgroupSize;
+        int numPackedJClusters = divideRoundUp(nbl->work->cj_ind, c_nbnxnGpuJgroupSize);
+        nbl->work->cj_ind      = numPackedJClusters * c_nbnxnGpuJgroupSize;
 
         if (nsp_max_av > 0)
         {
@@ -2306,26 +1997,25 @@ static void clear_pairlist_fep(t_nblist* nl)
 }
 
 /* Sets a simple list i-cell bounding box, including PBC shift */
-static inline void
-set_icell_bb_simple(gmx::ArrayRef<const BoundingBox> bb, int ci, real shx, real shy, real shz, BoundingBox* bb_ci)
+static inline void set_icell_bb_simple(ArrayRef<const BoundingBox> bb, int ci, const RVec& shift, BoundingBox* bb_ci)
 {
-    bb_ci->lower.x = bb[ci].lower.x + shx;
-    bb_ci->lower.y = bb[ci].lower.y + shy;
-    bb_ci->lower.z = bb[ci].lower.z + shz;
-    bb_ci->upper.x = bb[ci].upper.x + shx;
-    bb_ci->upper.y = bb[ci].upper.y + shy;
-    bb_ci->upper.z = bb[ci].upper.z + shz;
+    bb_ci->lower.x = bb[ci].lower.x + shift[XX];
+    bb_ci->lower.y = bb[ci].lower.y + shift[YY];
+    bb_ci->lower.z = bb[ci].lower.z + shift[ZZ];
+    bb_ci->upper.x = bb[ci].upper.x + shift[XX];
+    bb_ci->upper.y = bb[ci].upper.y + shift[YY];
+    bb_ci->upper.z = bb[ci].upper.z + shift[ZZ];
 }
 
 /* Sets a simple list i-cell bounding box, including PBC shift */
-static inline void set_icell_bb(const Grid& iGrid, int ci, real shx, real shy, real shz, NbnxnPairlistCpuWork* work)
+static inline void set_icell_bb(const Grid& iGrid, int ci, const RVec& shift, NbnxmPairlistCpuWork* work)
 {
-    set_icell_bb_simple(iGrid.iBoundingBoxes(), ci, shx, shy, shz, &work->iClusterData.bb[0]);
+    set_icell_bb_simple(iGrid.iBoundingBoxes(), ci, shift, &work->iClusterData.bb[0]);
 }
 
 #if NBNXN_BBXXXX
 /* Sets a super-cell and sub cell bounding boxes, including PBC shift */
-static void set_icell_bbxxxx_supersub(gmx::ArrayRef<const float> bb, int ci, real shx, real shy, real shz, float* bb_ci)
+static void set_icell_bbxxxx_supersub(ArrayRef<const float> bb, int ci, const RVec& shift, float* bb_ci)
 {
     constexpr int cellBBStride = packedBoundingBoxesIndex(c_gpuNumClusterPerCell);
     constexpr int pbbStride    = c_packedBoundingBoxesDimSize;
@@ -2334,84 +2024,81 @@ static void set_icell_bbxxxx_supersub(gmx::ArrayRef<const float> bb, int ci, rea
     {
         for (int i = 0; i < pbbStride; i++)
         {
-            bb_ci[m + 0 * pbbStride + i] = bb[ia + m + 0 * pbbStride + i] + shx;
-            bb_ci[m + 1 * pbbStride + i] = bb[ia + m + 1 * pbbStride + i] + shy;
-            bb_ci[m + 2 * pbbStride + i] = bb[ia + m + 2 * pbbStride + i] + shz;
-            bb_ci[m + 3 * pbbStride + i] = bb[ia + m + 3 * pbbStride + i] + shx;
-            bb_ci[m + 4 * pbbStride + i] = bb[ia + m + 4 * pbbStride + i] + shy;
-            bb_ci[m + 5 * pbbStride + i] = bb[ia + m + 5 * pbbStride + i] + shz;
+            for (int d = 0; d < DIM; d++)
+            {
+                bb_ci[m + d * pbbStride + i] = bb[ia + m + d * pbbStride + i] + shift[d];
+            }
+            for (int d = 0; d < DIM; d++)
+            {
+                bb_ci[m + (DIM + d) * pbbStride + i] = bb[ia + m + (DIM + d) * pbbStride + i] + shift[d];
+            }
         }
     }
 }
 #endif
 
 /* Sets a super-cell and sub cell bounding boxes, including PBC shift */
-gmx_unused static void set_icell_bb_supersub(gmx::ArrayRef<const BoundingBox> bb,
-                                             int                              ci,
-                                             real                             shx,
-                                             real                             shy,
-                                             real                             shz,
-                                             BoundingBox*                     bb_ci)
+gmx_unused static void
+set_icell_bb_supersub(ArrayRef<const BoundingBox> bb, int ci, const RVec& shift, BoundingBox* bb_ci)
 {
     for (int i = 0; i < c_gpuNumClusterPerCell; i++)
     {
-        set_icell_bb_simple(bb, ci * c_gpuNumClusterPerCell + i, shx, shy, shz, &bb_ci[i]);
+        set_icell_bb_simple(bb, ci * c_gpuNumClusterPerCell + i, shift, &bb_ci[i]);
     }
 }
 
 /* Sets a super-cell and sub cell bounding boxes, including PBC shift */
-gmx_unused static void set_icell_bb(const Grid& iGrid, int ci, real shx, real shy, real shz, NbnxnPairlistGpuWork* work)
+gmx_unused static void set_icell_bb(const Grid& iGrid, int ci, const RVec& shift, NbnxmPairlistGpuWork* work)
 {
 #if NBNXN_BBXXXX
     set_icell_bbxxxx_supersub(
-            iGrid.packedBoundingBoxes(), ci, shx, shy, shz, work->iSuperClusterData.bbPacked.data());
+            iGrid.packedBoundingBoxes(), ci, shift, work->iSuperClusterData.bbPacked.data());
 #else
-    set_icell_bb_supersub(iGrid.iBoundingBoxes(), ci, shx, shy, shz, work->iSuperClusterData.bb.data());
+    set_icell_bb_supersub(iGrid.iBoundingBoxes(), ci, shift, work->iSuperClusterData.bb.data());
 #endif
 }
 
 /* Copies PBC shifted i-cell atom coordinates x,y,z to working array */
 static void icell_set_x_simple(int                                 ci,
-                               real                                shx,
-                               real                                shy,
-                               real                                shz,
+                               const RVec&                         shift,
                                int                                 stride,
                                const real*                         x,
-                               NbnxnPairlistCpuWork::IClusterData* iClusterData)
+                               NbnxmPairlistCpuWork::IClusterData* iClusterData)
 {
-    const int ia = ci * c_nbnxnCpuIClusterSize;
+    constexpr int c_iClusterSize = sc_iClusterSize(NbnxmKernelType::Cpu4x4_PlainC);
 
-    for (int i = 0; i < c_nbnxnCpuIClusterSize; i++)
+    const int ia = ci * c_iClusterSize;
+
+    for (int i = 0; i < c_iClusterSize; i++)
     {
-        iClusterData->x[i * STRIDE_XYZ + XX] = x[(ia + i) * stride + XX] + shx;
-        iClusterData->x[i * STRIDE_XYZ + YY] = x[(ia + i) * stride + YY] + shy;
-        iClusterData->x[i * STRIDE_XYZ + ZZ] = x[(ia + i) * stride + ZZ] + shz;
+        for (int d = 0; d < DIM; d++)
+        {
+            iClusterData->x[i * STRIDE_XYZ + d] = x[(ia + i) * stride + d] + shift[d];
+        }
     }
 }
 
 static void icell_set_x(int                             ci,
-                        real                            shx,
-                        real                            shy,
-                        real                            shz,
+                        const RVec&                     shift,
                         int                             stride,
                         const real*                     x,
                         const ClusterDistanceKernelType kernelType,
-                        NbnxnPairlistCpuWork*           work)
+                        NbnxmPairlistCpuWork*           work)
 {
     switch (kernelType)
     {
 #if GMX_HAVE_NBNXM_SIMD_4XM
         case ClusterDistanceKernelType::CpuSimd_4xM:
-            icell_set_x_simd_4xn(ci, shx, shy, shz, stride, x, work);
+            setICellCoordinatesSimd4xM(ci, shift, stride, x, work);
             break;
 #endif
 #if GMX_HAVE_NBNXM_SIMD_2XMM
         case ClusterDistanceKernelType::CpuSimd_2xMM:
-            icell_set_x_simd_2xnn(ci, shx, shy, shz, stride, x, work);
+            setICellCoordinatesSimd2xMM(ci, shift, stride, x, work);
             break;
 #endif
         case ClusterDistanceKernelType::CpuPlainC:
-            icell_set_x_simple(ci, shx, shy, shz, stride, x, &work->iClusterData);
+            icell_set_x_simple(ci, shift, stride, x, &work->iClusterData);
             break;
         default: GMX_ASSERT(false, "Unhandled case"); break;
     }
@@ -2419,13 +2106,11 @@ static void icell_set_x(int                             ci,
 
 /* Copies PBC shifted super-cell atom coordinates x,y,z to working array */
 static void icell_set_x(int                                  ci,
-                        real                                 shx,
-                        real                                 shy,
-                        real                                 shz,
+                        const RVec&                          shift,
                         int                                  stride,
                         const real*                          x,
                         ClusterDistanceKernelType gmx_unused kernelType,
-                        NbnxnPairlistGpuWork*                work)
+                        NbnxmPairlistGpuWork*                work)
 {
     if constexpr (!c_useSimdGpuClusterPairDistance)
     {
@@ -2434,9 +2119,10 @@ static void icell_set_x(int                                  ci,
         int ia = ci * c_gpuNumClusterPerCell * c_nbnxnGpuClusterSize;
         for (int i = 0; i < c_gpuNumClusterPerCell * c_nbnxnGpuClusterSize; i++)
         {
-            x_ci[i * DIM + XX] = x[(ia + i) * stride + XX] + shx;
-            x_ci[i * DIM + YY] = x[(ia + i) * stride + YY] + shy;
-            x_ci[i * DIM + ZZ] = x[(ia + i) * stride + ZZ] + shz;
+            for (int d = 0; d < DIM; d++)
+            {
+                x_ci[i * DIM + d] = x[(ia + i) * stride + d] + shift[d];
+            }
         }
     }
     else
@@ -2451,12 +2137,11 @@ static void icell_set_x(int                                  ci,
             const int outputOffset = si * c_nbnxnGpuClusterSize * DIM;
             for (int i = 0; i < c_nbnxnGpuClusterSize; i++)
             {
-                x_ci[outputOffset + XX * c_nbnxnGpuClusterSize + i] =
-                        x[inputOffset + i * stride + XX] + shx;
-                x_ci[outputOffset + YY * c_nbnxnGpuClusterSize + i] =
-                        x[inputOffset + i * stride + YY] + shy;
-                x_ci[outputOffset + ZZ * c_nbnxnGpuClusterSize + i] =
-                        x[inputOffset + i * stride + ZZ] + shz;
+                for (int d = 0; d < DIM; d++)
+                {
+                    x_ci[outputOffset + d * c_nbnxnGpuClusterSize + i] =
+                            x[inputOffset + i * stride + d] + shift[d];
+                }
             }
         }
     }
@@ -2502,7 +2187,7 @@ static real effective_buffer_1x1_vs_MxN(const Grid& iGrid, const Grid& jGrid)
 }
 
 /* Estimates the interaction volume^2 for non-local interactions */
-static real nonlocal_vol2(const struct gmx_domdec_zones_t* zones, const rvec ls, real r)
+static real nonlocal_vol2(const gmx::DomdecZones& zones, const rvec ls, real r)
 {
     real vol2_est_tot = 0;
 
@@ -2513,20 +2198,20 @@ static real nonlocal_vol2(const struct gmx_domdec_zones_t* zones, const rvec ls,
      * as small parts as possible.
      */
 
-    for (int z = 0; z < zones->n; z++)
+    for (int z = 0; z < zones.numZones(); z++)
     {
-        if (zones->shift[z][XX] + zones->shift[z][YY] + zones->shift[z][ZZ] == 1)
+        if (zones.shift(z)[XX] + zones.shift(z)[YY] + zones.shift(z)[ZZ] == 1)
         {
             real cl = 0;
             real ca = 1;
             real za = 1;
             for (int d = 0; d < DIM; d++)
             {
-                if (zones->shift[z][d] == 0)
+                if (zones.shift(z)[d] == 0)
                 {
                     cl += 0.5 * ls[d];
                     ca *= ls[d];
-                    za *= zones->size[z].x1[d] - zones->size[z].x0[d];
+                    za *= zones.sizes(z).x1[d] - zones.sizes(z).x0[d];
                 }
             }
 
@@ -2545,7 +2230,7 @@ static real nonlocal_vol2(const struct gmx_domdec_zones_t* zones, const rvec ls,
 }
 
 /* Estimates the average size of a full j-list for super/sub setup */
-static void get_nsubpair_target(const Nbnxm::GridSet&     gridSet,
+static void get_nsubpair_target(const GridSet&            gridSet,
                                 const InteractionLocality iloc,
                                 const real                rlist,
                                 const int                 min_ci_balanced,
@@ -2574,7 +2259,7 @@ static void get_nsubpair_target(const Nbnxm::GridSet&     gridSet,
         return;
     }
 
-    gmx::RVec               ls;
+    RVec                    ls;
     const int               numAtomsCluster = grid.geometry().numAtomsICluster;
     const Grid::Dimensions& dims            = grid.dimensions();
 
@@ -2586,10 +2271,10 @@ static void get_nsubpair_target(const Nbnxm::GridSet&     gridSet,
     const real r_eff_sup = rlist + nbnxn_get_rlist_effective_inc(numAtomsCluster, ls);
 
     real nsp_est_nl = 0;
-    if (gridSet.domainSetup().haveMultipleDomains && gridSet.domainSetup().zones->n != 1)
+    if (gridSet.domainSetup().haveMultipleDomains && gridSet.domainSetup().zones->numZones() != 1)
     {
-        nsp_est_nl = gmx::square(dims.atomDensity / numAtomsCluster)
-                     * nonlocal_vol2(gridSet.domainSetup().zones, ls, r_eff_sup);
+        nsp_est_nl = square(dims.atomDensity / numAtomsCluster)
+                     * nonlocal_vol2(*gridSet.domainSetup().zones, ls, r_eff_sup);
     }
 
     real nsp_est = nsp_est_nl;
@@ -2600,9 +2285,9 @@ static void get_nsubpair_target(const Nbnxm::GridSet&     gridSet,
         /* 6/2 rectangular volume on the faces */
         vol_est += (ls[XX] * ls[YY] + ls[XX] * ls[ZZ] + ls[YY] * ls[ZZ]) * r_eff_sup;
         /* 12/2 quarter pie slices on the edges */
-        vol_est += 2 * (ls[XX] + ls[YY] + ls[ZZ]) * 0.25 * M_PI * gmx::square(r_eff_sup);
+        vol_est += 2 * (ls[XX] + ls[YY] + ls[ZZ]) * 0.25 * M_PI * square(r_eff_sup);
         /* 4 octants of a sphere */
-        vol_est += 0.5 * 4.0 / 3.0 * M_PI * gmx::power3(r_eff_sup);
+        vol_est += 0.5 * 4.0 / 3.0 * M_PI * power3(r_eff_sup);
 
         /* Estimate the number of cluster pairs as the local number of
          * clusters times the volume they interact with times the density.
@@ -2661,7 +2346,7 @@ static void print_nblist_sci_cj(FILE* fp, const NbnxnPairlistGpu& nbl)
 {
     for (const nbnxn_sci_t& sci : nbl.sci)
     {
-        fprintf(fp, "ci %4d  shift %2d  ncjPacked %2d\n", sci.sci, sci.shift, sci.numJClusterGroups());
+        fprintf(fp, "ci %4d  shift %2d  numPackedJClusters %2d\n", sci.sci, sci.shift, sci.numJClusterGroups());
 
         int ncp = 0;
         for (int jPacked = sci.cjPackedBegin; jPacked < sci.cjPackedEnd; jPacked++)
@@ -2682,27 +2367,32 @@ static void print_nblist_sci_cj(FILE* fp, const NbnxnPairlistGpu& nbl)
                 }
             }
         }
-        fprintf(fp, "ci %4d  shift %2d  ncjPacked %2d ncp %3d\n", sci.sci, sci.shift, sci.numJClusterGroups(), ncp);
+        fprintf(fp,
+                "ci %4d  shift %2d  numPackedJClusters %2d ncp %3d\n",
+                sci.sci,
+                sci.shift,
+                sci.numJClusterGroups(),
+                ncp);
     }
 }
 
 /* Combine pair lists *nbl generated on multiple threads nblc */
-static void combine_nblists(gmx::ArrayRef<const NbnxnPairlistGpu> nbls, NbnxnPairlistGpu* nblc)
+static void combine_nblists(ArrayRef<const NbnxnPairlistGpu> nbls, NbnxnPairlistGpu* nblc)
 {
-    int nsci      = nblc->sci.size();
-    int ncjPacked = nblc->cjPacked.size();
-    int nexcl     = nblc->excl.size();
+    int nsci               = nblc->sci.size();
+    int numPackedJClusters = nblc->cjPacked.size();
+    int nexcl              = nblc->excl.size();
     for (const auto& nbl : nbls)
     {
         nsci += nbl.sci.size();
-        ncjPacked += nbl.cjPacked.size();
+        numPackedJClusters += nbl.cjPacked.size();
         nexcl += nbl.excl.size();
     }
 
     /* Resize with the final, combined size, so we can fill in parallel */
     /* NOTE: For better performance we should use default initialization */
     nblc->sci.resize(nsci);
-    nblc->cjPacked.resize(ncjPacked);
+    nblc->cjPacked.resize(numPackedJClusters);
     nblc->excl.resize(nexcl);
 
     /* Each thread should copy its own data to the combined arrays,
@@ -2711,7 +2401,7 @@ static void combine_nblists(gmx::ArrayRef<const NbnxnPairlistGpu> nbls, NbnxnPai
     const int gmx_unused nthreads = gmx_omp_nthreads_get(ModuleMultiThread::Pairsearch);
 
 #pragma omp parallel for num_threads(nthreads) schedule(static)
-    for (gmx::Index n = 0; n < nbls.ssize(); n++)
+    for (Index n = 0; n < nbls.ssize(); n++)
     {
         try
         {
@@ -2719,10 +2409,10 @@ static void combine_nblists(gmx::ArrayRef<const NbnxnPairlistGpu> nbls, NbnxnPai
              * Note that the original sizes in nblc are lost.
              */
             int sci_offset      = nsci;
-            int cjPacked_offset = ncjPacked;
+            int cjPacked_offset = numPackedJClusters;
             int excl_offset     = nexcl;
 
-            for (gmx::Index i = n; i < nbls.ssize(); i++)
+            for (Index i = n; i < nbls.ssize(); i++)
             {
                 sci_offset -= nbls[i].sci.size();
                 cjPacked_offset -= nbls[i].cjPacked.size();
@@ -2738,7 +2428,7 @@ static void combine_nblists(gmx::ArrayRef<const NbnxnPairlistGpu> nbls, NbnxnPai
                 nblc->sci[sci_offset + i].cjPackedEnd += cjPacked_offset;
             }
 
-            for (gmx::Index jPacked = 0; jPacked < nbli.cjPacked.size(); jPacked++)
+            for (Index jPacked = 0; jPacked < nbli.cjPacked.size(); jPacked++)
             {
                 nblc->cjPacked.list_[cjPacked_offset + jPacked] = nbli.cjPacked.list_[jPacked];
                 for (int splitIdx = 0; splitIdx < c_nbnxnGpuClusterpairSplit; splitIdx++)
@@ -2761,8 +2451,7 @@ static void combine_nblists(gmx::ArrayRef<const NbnxnPairlistGpu> nbls, NbnxnPai
     }
 }
 
-static void balance_fep_lists(gmx::ArrayRef<std::unique_ptr<t_nblist>> fepLists,
-                              gmx::ArrayRef<PairsearchWork>            work)
+static void balance_fep_lists(ArrayRef<std::unique_ptr<t_nblist>> fepLists, ArrayRef<PairsearchWork> work)
 {
     const int numLists = fepLists.ssize();
 
@@ -2781,7 +2470,7 @@ static void balance_fep_lists(gmx::ArrayRef<std::unique_ptr<t_nblist>> fepLists,
         nrj_tot += list->nrj;
     }
 
-    const int nrj_target = (nrj_tot + numLists - 1) / numLists;
+    const int nrj_target = divideRoundUp(nrj_tot, numLists);
 
     GMX_ASSERT(gmx_omp_nthreads_get(ModuleMultiThread::Nonbonded) == numLists,
                "We should have as many work objects as FEP lists");
@@ -2960,7 +2649,7 @@ static int get_ci_block_size(const Grid& iGrid, const bool haveMultipleDomains, 
     /* Ensure the blocks are not too small: avoids cache invalidation */
     if (ci_block * numAtomsPerCell < ci_block_min_atoms)
     {
-        ci_block = (ci_block_min_atoms + numAtomsPerCell - 1) / numAtomsPerCell;
+        ci_block = divideRoundUp(ci_block_min_atoms, numAtomsPerCell);
     }
 
     /* Without domain decomposition
@@ -2968,7 +2657,7 @@ static int get_ci_block_size(const Grid& iGrid, const bool haveMultipleDomains, 
      */
     if (!haveMultipleDomains || numLists * 3 * ci_block > iGrid.numCells())
     {
-        ci_block = (iGrid.numCells() + numLists - 1) / numLists;
+        ci_block = divideRoundUp(iGrid.numCells(), numLists);
     }
 
     if (ci_block > 1 && (numLists - 1) * ci_block >= iGrid.numCells())
@@ -3001,16 +2690,6 @@ static int getBufferFlagShift(int numAtomsPerCluster)
     return bufferFlagShift;
 }
 
-static bool pairlistIsSimple(const NbnxnPairlistCpu gmx_unused& pairlist)
-{
-    return true;
-}
-
-static bool pairlistIsSimple(const NbnxnPairlistGpu gmx_unused& pairlist)
-{
-    return false;
-}
-
 static void makeClusterListWrapper(NbnxnPairlistCpu* nbl,
                                    const Grid gmx_unused&          iGrid,
                                    const int                       ci,
@@ -3032,13 +2711,13 @@ static void makeClusterListWrapper(NbnxnPairlistCpu* nbl,
             break;
 #if GMX_HAVE_NBNXM_SIMD_4XM
         case ClusterDistanceKernelType::CpuSimd_4xM:
-            makeClusterListSimd4xn(
+            makeClusterListSimd4xM(
                     jGrid, nbl, ci, firstCell, lastCell, excludeSubDiagonal, nbat->x().data(), rlist2, rbb2, numDistanceChecks);
             break;
 #endif
 #if GMX_HAVE_NBNXM_SIMD_2XMM
         case ClusterDistanceKernelType::CpuSimd_2xMM:
-            makeClusterListSimd2xnn(
+            makeClusterListSimd2xMM(
                     jGrid, nbl, ci, firstCell, lastCell, excludeSubDiagonal, nbat->x().data(), rlist2, rbb2, numDistanceChecks);
             break;
 #endif
@@ -3106,7 +2785,7 @@ static void setBufferFlags(const NbnxnPairlistCpu& nbl,
                            gmx_bitmask_t*          gridj_flag,
                            const int               th)
 {
-    if (gmx::ssize(nbl.cj) > ncj_old_j)
+    if (ssize(nbl.cj) > ncj_old_j)
     {
         int cbFirst = nbl.cj.cj(ncj_old_j) >> gridj_flag_shift;
         int cbLast  = nbl.cj.list_.back().cj >> gridj_flag_shift;
@@ -3128,7 +2807,7 @@ static void setBufferFlags(const NbnxnPairlistGpu gmx_unused& nbl,
 
 /* Generates the part of pair-list nbl assigned to our thread */
 template<typename T>
-static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
+static void nbnxn_make_pairlist_part(const GridSet&          gridSet,
                                      const Grid&             iGrid,
                                      const Grid&             jGrid,
                                      PairsearchWork*         work,
@@ -3146,14 +2825,9 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                                      T*                      nbl,
                                      t_nblist*               nbl_fep)
 {
-    matrix         box;
-    real           rl_fep2 = 0;
-    ivec           shp;
-    int            gridi_flag_shift = 0, gridj_flag_shift = 0;
-    gmx_bitmask_t* gridj_flag = nullptr;
+    constexpr bool c_listIsSimple = !std::is_same_v<T, NbnxnPairlistGpu>;
 
-    if (jGrid.geometry().isSimple != pairlistIsSimple(*nbl)
-        || iGrid.geometry().isSimple != pairlistIsSimple(*nbl))
+    if (jGrid.geometry().isSimple != c_listIsSimple || iGrid.geometry().isSimple != c_listIsSimple)
     {
         gmx_incons("Grid incompatible with pair-list");
     }
@@ -3166,6 +2840,9 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
 
     nbl->rlist = rlist;
 
+    int            gridi_flag_shift = 0;
+    int            gridj_flag_shift = 0;
+    gmx_bitmask_t* gridj_flag       = nullptr;
     if (bFBufferFlag)
     {
         /* Determine conversion of clusters to flag blocks */
@@ -3175,6 +2852,7 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
         gridj_flag = work->buffer_flags.data();
     }
 
+    matrix box;
     gridSet.getBox(box);
 
     const bool haveFep = gridSet.haveFep();
@@ -3184,6 +2862,7 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
     // Select the cluster pair distance kernel type
     const ClusterDistanceKernelType kernelType = getClusterDistanceKernelType(pairlistType, *nbat);
 
+    real rFepListSquared = 0;
     if (haveFep)
     {
         /* To reduce the cost of the expensive free-energy kernel for which
@@ -3199,19 +2878,18 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
         const real rlistFep = nbl->rlist + effective_buffer_1x1_vs_MxN(iGrid, jGrid);
 
         /* Make sure we don't go above the maximum allowed cut-off distance */
-        rl_fep2 = std::min(gmx::square(rlistFep), max_cutoff2(gridSet.domainSetup().pbcType_, box));
+        rFepListSquared = std::min(square(rlistFep), max_cutoff2(gridSet.domainSetup().pbcType_, box));
 
         if (debug)
         {
-            fprintf(debug, "nbl_fep atom-pair rlist %f\n", std::sqrt(rl_fep2));
+            fprintf(debug, "nbl_fep atom-pair rlist %f\n", std::sqrt(rFepListSquared));
         }
     }
 
     const Grid::Dimensions& iGridDims = iGrid.dimensions();
     const Grid::Dimensions& jGridDims = jGrid.dimensions();
 
-    const float rbb2 =
-            boundingbox_only_distance2(iGridDims, jGridDims, nbl->rlist, pairlistIsSimple(*nbl));
+    const float rbb2 = boundingbox_only_distance2(iGridDims, jGridDims, nbl->rlist, c_listIsSimple);
 
     if (debug)
     {
@@ -3221,6 +2899,7 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
     const bool isIntraGridList = (&iGrid == &jGrid);
 
     /* Set the shift range */
+    IVec shiftRange;
     for (int d = 0; d < DIM; d++)
     {
         /* Check if we need periodicity shifts.
@@ -3229,27 +2908,26 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
         if (d >= numPbcDimensions(gridSet.domainSetup().pbcType_)
             || gridSet.domainSetup().haveMultipleDomainsPerDim[d])
         {
-            shp[d] = 0;
+            shiftRange[d] = 0;
         }
         else
         {
             const real listRangeCellToCell =
                     listRangeForGridCellToGridCell(rlist, iGrid.dimensions(), jGrid.dimensions());
-            if (d == XX && box[XX][XX] - fabs(box[YY][XX]) - fabs(box[ZZ][XX]) < listRangeCellToCell)
+            if (d == XX && box[XX][XX] - std::fabs(box[YY][XX]) - std::fabs(box[ZZ][XX]) < listRangeCellToCell)
             {
-                shp[d] = 2;
+                shiftRange[d] = 2;
             }
             else
             {
-                shp[d] = 1;
+                shiftRange[d] = 1;
             }
         }
     }
-    const bool                       bSimple = pairlistIsSimple(*nbl);
-    gmx::ArrayRef<const BoundingBox> bb_i;
+    ArrayRef<const BoundingBox> bb_i;
 #if NBNXN_BBXXXX
-    gmx::ArrayRef<const float> pbb_i;
-    if (bSimple)
+    ArrayRef<const float> pbb_i;
+    if (c_listIsSimple)
     {
         bb_i = iGrid.iBoundingBoxes();
     }
@@ -3261,10 +2939,10 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
     /* We use the normal bounding box format for both grid types */
     bb_i = iGrid.iBoundingBoxes();
 #endif
-    gmx::ArrayRef<const BoundingBox1D> bbcz_i  = iGrid.zBoundingBoxes();
-    gmx::ArrayRef<const int>           flags_i = iGrid.clusterFlags();
-    gmx::ArrayRef<const BoundingBox1D> bbcz_j  = jGrid.zBoundingBoxes();
-    int                                cell0_i = iGrid.cellOffset();
+    ArrayRef<const BoundingBox1D> bbcz_i  = iGrid.zBoundingBoxes();
+    ArrayRef<const int>           flags_i = iGrid.clusterFlags();
+    ArrayRef<const BoundingBox1D> bbcz_j  = jGrid.zBoundingBoxes();
+    int                           cell0_i = iGrid.cellOffset();
 
     if (debug)
     {
@@ -3278,7 +2956,7 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
     int numDistanceChecks = 0;
 
     const real listRangeBBToJCell2 =
-            gmx::square(listRangeForBoundingBoxToGridCell(rlist, jGrid.dimensions()));
+            square(listRangeForBoundingBoxToGridCell(rlist, jGrid.dimensions()));
 
     /* Initially ci_b and ci to 1 before where we want them to start,
      * as they will both be incremented in next_ci.
@@ -3289,21 +2967,21 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
     int ci_y = 0;
     while (next_ci(iGrid, nth, ci_block, &ci_x, &ci_y, &ci_b, &ci))
     {
-        if (bSimple && flags_i[ci] == 0)
+        if (c_listIsSimple && flags_i[ci] == 0)
         {
             continue;
         }
         const int ncj_old_i = getNumSimpleJClustersInList(*nbl);
 
         real d2cx = 0;
-        if (!isIntraGridList && shp[XX] == 0)
+        if (!isIntraGridList && shiftRange[XX] == 0)
         {
-            const real bx1 =
-                    bSimple ? bb_i[ci].upper.x
-                            : iGridDims.lowerCorner[XX] + (real(ci_x) + 1) * iGridDims.cellSize[XX];
+            const real bx1 = c_listIsSimple ? bb_i[ci].upper.x
+                                            : iGridDims.lowerCorner[XX]
+                                                      + (real(ci_x) + 1) * iGridDims.cellSize[XX];
             if (bx1 < jGridDims.lowerCorner[XX])
             {
-                d2cx = gmx::square(jGridDims.lowerCorner[XX] - bx1);
+                d2cx = square(jGridDims.lowerCorner[XX] - bx1);
 
                 if (d2cx >= listRangeBBToJCell2)
                 {
@@ -3315,7 +2993,7 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
         int ci_xy = ci_x * iGridDims.numCells[YY] + ci_y;
 
         /* Loop over shift vectors in three dimensions */
-        for (int tz = -shp[ZZ]; tz <= shp[ZZ]; tz++)
+        for (int tz = -shiftRange[ZZ]; tz <= shiftRange[ZZ]; tz++)
         {
             const real shz = real(tz) * box[ZZ][ZZ];
 
@@ -3325,11 +3003,11 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
             real d2z = 0;
             if (tz < 0)
             {
-                d2z = gmx::square(bz1);
+                d2z = square(bz1);
             }
             else if (tz > 0)
             {
-                d2z = gmx::square(bz0 - box[ZZ][ZZ]);
+                d2z = square(bz0 - box[ZZ][ZZ]);
             }
 
             const real d2z_cx = d2z + d2cx;
@@ -3346,14 +3024,15 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
             }
             /* The check with bz1_frac close to or larger than 1 comes later */
 
-            for (int ty = -shp[YY]; ty <= shp[YY]; ty++)
+            for (int ty = -shiftRange[YY]; ty <= shiftRange[YY]; ty++)
             {
                 const real shy = real(ty) * box[YY][YY] + real(tz) * box[ZZ][YY];
 
-                const real by0 = bSimple ? bb_i[ci].lower.y + shy
-                                         : iGridDims.lowerCorner[YY]
-                                                   + (real(ci_y)) * iGridDims.cellSize[YY] + shy;
-                const real by1 = bSimple ? bb_i[ci].upper.y + shy
+                const real by0 = c_listIsSimple ? bb_i[ci].lower.y + shy
+                                                : iGridDims.lowerCorner[YY]
+                                                          + (real(ci_y)) * iGridDims.cellSize[YY] + shy;
+                const real by1 = c_listIsSimple
+                                         ? bb_i[ci].upper.y + shy
                                          : iGridDims.lowerCorner[YY]
                                                    + (real(ci_y) + 1) * iGridDims.cellSize[YY] + shy;
 
@@ -3368,20 +3047,20 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                 real d2z_cy = d2z;
                 if (by1 < jGridDims.lowerCorner[YY])
                 {
-                    d2z_cy += gmx::square(jGridDims.lowerCorner[YY] - by1);
+                    d2z_cy += square(jGridDims.lowerCorner[YY] - by1);
                 }
                 else if (by0 > jGridDims.upperCorner[YY])
                 {
-                    d2z_cy += gmx::square(by0 - jGridDims.upperCorner[YY]);
+                    d2z_cy += square(by0 - jGridDims.upperCorner[YY]);
                 }
 
-                for (int tx = -shp[XX]; tx <= shp[XX]; tx++)
+                for (int tx = -shiftRange[XX]; tx <= shiftRange[XX]; tx++)
                 {
                     const int shift = xyzToShiftIndex(tx, ty, tz);
 
-                    const bool excludeSubDiagonal = (isIntraGridList && shift == gmx::c_centralShiftIndex);
+                    const bool excludeSubDiagonal = (isIntraGridList && shift == c_centralShiftIndex);
 
-                    if (c_pbcShiftBackward && isIntraGridList && shift > gmx::c_centralShiftIndex)
+                    if (c_pbcShiftBackward && isIntraGridList && shift > c_centralShiftIndex)
                     {
                         continue;
                     }
@@ -3389,10 +3068,12 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                     const real shx =
                             real(tx) * box[XX][XX] + real(ty) * box[YY][XX] + real(tz) * box[ZZ][XX];
 
-                    const real bx0 = bSimple ? bb_i[ci].lower.x + shx
+                    const real bx0 = c_listIsSimple
+                                             ? bb_i[ci].lower.x + shx
                                              : iGridDims.lowerCorner[XX]
                                                        + (real(ci_x)) * iGridDims.cellSize[XX] + shx;
-                    const real bx1 = bSimple ? bb_i[ci].upper.x + shx
+                    const real bx1 = c_listIsSimple
+                                             ? bb_i[ci].upper.x + shx
                                              : iGridDims.lowerCorner[XX]
                                                        + (real(ci_x) + 1) * iGridDims.cellSize[XX] + shx;
 
@@ -3414,12 +3095,10 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                         cxf = ci_x;
                     }
 
-                    set_icell_bb(iGrid, ci, shx, shy, shz, nbl->work.get());
+                    set_icell_bb(iGrid, ci, { shx, shy, shz }, nbl->work.get());
 
                     icell_set_x(cell0_i + ci,
-                                shx,
-                                shy,
-                                shz,
+                                { shx, shy, shz },
                                 nbat->xstride,
                                 nbat->x().data(),
                                 kernelType,
@@ -3431,20 +3110,20 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                         real       d2zx    = d2z;
                         if (jGridDims.lowerCorner[XX] + cx_real * jGridDims.cellSize[XX] > bx1)
                         {
-                            d2zx += gmx::square(jGridDims.lowerCorner[XX]
-                                                + cx_real * jGridDims.cellSize[XX] - bx1);
+                            d2zx += square(jGridDims.lowerCorner[XX]
+                                           + cx_real * jGridDims.cellSize[XX] - bx1);
                         }
                         else if (jGridDims.lowerCorner[XX] + (cx_real + 1) * jGridDims.cellSize[XX] < bx0)
                         {
-                            d2zx += gmx::square(jGridDims.lowerCorner[XX]
-                                                + (cx_real + 1) * jGridDims.cellSize[XX] - bx0);
+                            d2zx += square(jGridDims.lowerCorner[XX]
+                                           + (cx_real + 1) * jGridDims.cellSize[XX] - bx0);
                         }
 
                         /* When true, leave the pairs with i > j.
                          * Skip half of y when i and j have the same x.
                          */
                         const bool skipHalfY = (isIntraGridList && cx == 0
-                                                && (!c_pbcShiftBackward || shift == gmx::c_centralShiftIndex)
+                                                && (!c_pbcShiftBackward || shift == c_centralShiftIndex)
                                                 && cyf < ci_y);
                         const int  cyf_x     = skipHalfY ? ci_y : cyf;
 
@@ -3459,13 +3138,13 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                             real       d2zxy   = d2zx;
                             if (jGridDims.lowerCorner[YY] + cy_real * jGridDims.cellSize[YY] > by1)
                             {
-                                d2zxy += gmx::square(jGridDims.lowerCorner[YY]
-                                                     + cy_real * jGridDims.cellSize[YY] - by1);
+                                d2zxy += square(jGridDims.lowerCorner[YY]
+                                                + cy_real * jGridDims.cellSize[YY] - by1);
                             }
                             else if (jGridDims.lowerCorner[YY] + (cy_real + 1) * jGridDims.cellSize[YY] < by0)
                             {
-                                d2zxy += gmx::square(jGridDims.lowerCorner[YY]
-                                                     + (cy_real + 1) * jGridDims.cellSize[YY] - by0);
+                                d2zxy += square(jGridDims.lowerCorner[YY]
+                                                + (cy_real + 1) * jGridDims.cellSize[YY] - by0);
                             }
                             if (columnStart < columnEnd && d2zxy < listRangeBBToJCell2)
                             {
@@ -3502,7 +3181,7 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                                 int downTestCell = midCell;
                                 while (downTestCell >= columnStart
                                        && (bbcz_j[downTestCell].upper >= bz0
-                                           || d2xy + gmx::square(bbcz_j[downTestCell].upper - bz0) < rlist2))
+                                           || d2xy + square(bbcz_j[downTestCell].upper - bz0) < rlist2))
                                 {
                                     downTestCell--;
                                 }
@@ -3517,7 +3196,7 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                                 int upTestCell = midCell + 1;
                                 while (upTestCell < columnEnd
                                        && (bbcz_j[upTestCell].lower <= bz1
-                                           || d2xy + gmx::square(bbcz_j[upTestCell].lower - bz1) < rlist2))
+                                           || d2xy + square(bbcz_j[upTestCell].lower - bz1) < rlist2))
                                 {
                                     upTestCell++;
                                 }
@@ -3533,13 +3212,12 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                                     lastCell  = -1;
                                     for (int k = columnStart; k < columnEnd; k++)
                                     {
-                                        if (d2xy + gmx::square(bbcz_j[k * NNBSBB_D + 1] - bz0) < rlist2
+                                        if (d2xy + square(bbcz_j[k * NNBSBB_D + 1] - bz0) < rlist2
                                             && k < firstCell)
                                         {
                                             firstCell = k;
                                         }
-                                        if (d2xy + gmx::square(bbcz_j[k * NNBSBB_D] - bz1) < rlist2
-                                            && k > lastCell)
+                                        if (d2xy + square(bbcz_j[k * NNBSBB_D] - bz1) < rlist2 && k > lastCell)
                                         {
                                             lastCell = k;
                                         }
@@ -3552,7 +3230,7 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                                     /* We want each atom/cell pair only once,
                                      * only use cj >= ci.
                                      */
-                                    if (!c_pbcShiftBackward || shift == gmx::c_centralShiftIndex)
+                                    if (!c_pbcShiftBackward || shift == c_centralShiftIndex)
                                     {
                                         firstCell = std::max(firstCell, ci);
                                     }
@@ -3606,7 +3284,7 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
                                       shx,
                                       shy,
                                       shz,
-                                      rl_fep2,
+                                      rFepListSquared,
                                       iGrid,
                                       jGrid,
                                       nbl_fep);
@@ -3641,13 +3319,11 @@ static void nbnxn_make_pairlist_part(const Nbnxm::GridSet&   gridSet,
     }
 }
 
-static void reduce_buffer_flags(gmx::ArrayRef<PairsearchWork> searchWork,
-                                int                           nsrc,
-                                gmx::ArrayRef<gmx_bitmask_t>  dest)
+static void reduce_buffer_flags(ArrayRef<PairsearchWork> searchWork, int nsrc, ArrayRef<gmx_bitmask_t> dest)
 {
     for (int s = 0; s < nsrc; s++)
     {
-        gmx::ArrayRef<gmx_bitmask_t> flags(searchWork[s].buffer_flags);
+        ArrayRef<gmx_bitmask_t> flags(searchWork[s].buffer_flags);
 
         for (size_t b = 0; b < dest.size(); b++)
         {
@@ -3657,7 +3333,7 @@ static void reduce_buffer_flags(gmx::ArrayRef<PairsearchWork> searchWork,
     }
 }
 
-static void print_reduction_cost(gmx::ArrayRef<const gmx_bitmask_t> flags, int nout)
+static void print_reduction_cost(ArrayRef<const gmx_bitmask_t> flags, int nout)
 {
     int nelem = 0;
     int nkeep = 0;
@@ -3747,7 +3423,7 @@ static void copySelectedListRange(const nbnxn_ci_t* gmx_restrict       srcCi,
 }
 
 /* Returns the number of cluster pairs that are in use summed over all lists */
-static int countClusterpairs(gmx::ArrayRef<const NbnxnPairlistCpu> pairlists)
+static int countClusterpairs(ArrayRef<const NbnxnPairlistCpu> pairlists)
 {
     /* gcc 7 with -mavx512f can miss the contributions of 16 consecutive
      * elements to the sum calculated in this loop. Above we have disabled
@@ -3769,13 +3445,13 @@ static int countClusterpairs(gmx::ArrayRef<const NbnxnPairlistCpu> pairlists)
  * to reduction of parts of the force buffer that could be avoided. But since
  * the original lists are quite balanced, this will only give minor overhead.
  */
-static void rebalanceSimpleLists(gmx::ArrayRef<const NbnxnPairlistCpu> srcSet,
-                                 gmx::ArrayRef<NbnxnPairlistCpu>       destSet,
-                                 gmx::ArrayRef<PairsearchWork>         searchWork)
+static void rebalanceSimpleLists(ArrayRef<const NbnxnPairlistCpu> srcSet,
+                                 ArrayRef<NbnxnPairlistCpu>       destSet,
+                                 ArrayRef<PairsearchWork>         searchWork)
 {
     const int ncjTotal  = countClusterpairs(srcSet);
     const int numLists  = srcSet.ssize();
-    const int ncjTarget = (ncjTotal + numLists - 1) / numLists;
+    const int ncjTarget = divideRoundUp(ncjTotal, numLists);
 
 #pragma omp parallel num_threads(numLists)
     {
@@ -3805,7 +3481,7 @@ static void rebalanceSimpleLists(gmx::ArrayRef<const NbnxnPairlistCpu> srcSet,
 
             if (cjGlobal + src->ncjInUse > cjStart)
             {
-                for (gmx::Index i = 0; i < gmx::ssize(src->ci) && cjGlobal < cjEnd; i++)
+                for (Index i = 0; i < gmx::ssize(src->ci) && cjGlobal < cjEnd; i++)
                 {
                     const nbnxn_ci_t* srcCi = &src->ci[i];
                     int               ncj   = srcCi->cj_ind_end - srcCi->cj_ind_start;
@@ -3844,7 +3520,7 @@ static void rebalanceSimpleLists(gmx::ArrayRef<const NbnxnPairlistCpu> srcSet,
 }
 
 /* Returns if the pairlists are so imbalanced that it is worth rebalancing. */
-static bool checkRebalanceSimpleLists(gmx::ArrayRef<const NbnxnPairlistCpu> lists)
+static bool checkRebalanceSimpleLists(ArrayRef<const NbnxnPairlistCpu> lists)
 {
     int numLists = lists.ssize();
     int ncjMax   = 0;
@@ -3881,21 +3557,21 @@ static bool checkRebalanceSimpleLists(gmx::ArrayRef<const NbnxnPairlistCpu> list
 static void sort_sci(NbnxnPairlistGpu* nbl)
 {
     /* For CUDA version, sorting is done on the GPU */
-    if (GMX_GPU_CUDA)
+    if (nbnxmSortListsOnGpu())
     {
         return;
     }
 
-    if (nbl->cjPacked.size() <= gmx::Index(nbl->sci.size()))
+    if (nbl->cjPacked.size() <= Index(nbl->sci.size()))
     {
         /* nsci = 0 or all sci have size 1, sorting won't change the order */
         return;
     }
 
-    NbnxnPairlistGpuWork& work = *nbl->work;
+    NbnxmPairlistGpuWork& work = *nbl->work;
 
     /* We will distinguish differences up to double the average */
-    const int m = static_cast<int>((2 * ssize(nbl->cjPacked)) / ssize(nbl->sci));
+    const int m = static_cast<int>((2 * ssize(nbl->cjPacked)) / gmx::ssize(nbl->sci));
 
     /* Resize work.sci_sort so we can sort into it */
     work.sci_sort.resize(nbl->sci.size());
@@ -3913,7 +3589,7 @@ static void sort_sci(NbnxnPairlistGpu* nbl)
     /* Calculate the offset for each count */
     int s0  = sort[m];
     sort[m] = 0;
-    for (gmx::Index i = m - 1; i >= 0; i--)
+    for (Index i = m - 1; i >= 0; i--)
     {
         int s1  = sort[i];
         sort[i] = sort[i + 1] + s0;
@@ -3921,7 +3597,7 @@ static void sort_sci(NbnxnPairlistGpu* nbl)
     }
 
     /* Sort entries directly into place */
-    gmx::ArrayRef<nbnxn_sci_t> sci_sort = work.sci_sort;
+    ArrayRef<nbnxn_sci_t> sci_sort = work.sci_sort;
     for (const nbnxn_sci_t& sci : nbl->sci)
     {
         int i               = std::min(m, sci.numJClusterGroups());
@@ -3933,8 +3609,7 @@ static void sort_sci(NbnxnPairlistGpu* nbl)
 }
 
 /* Returns the i-zone range for pairlist construction for the give locality */
-static Range<int> getIZoneRange(const Nbnxm::GridSet::DomainSetup& domainSetup,
-                                const InteractionLocality          locality)
+static Range<int> getIZoneRange(const GridSet::DomainSetup& domainSetup, const InteractionLocality locality)
 {
     if (domainSetup.doTestParticleInsertion_)
     {
@@ -3949,12 +3624,12 @@ static Range<int> getIZoneRange(const Nbnxm::GridSet::DomainSetup& domainSetup,
     else
     {
         /* Non-local: we need all i-zones */
-        return { 0, int(domainSetup.zones->iZones.size()) };
+        return { 0, domainSetup.zones->numIZones() };
     }
 }
 
 /* Returns the j-zone range for pairlist construction for the give locality and i-zone */
-static Range<int> getJZoneRange(const gmx_domdec_zones_t* ddZones,
+static Range<int> getJZoneRange(const gmx::DomdecZones*   ddZones,
                                 const InteractionLocality locality,
                                 const int                 iZone)
 {
@@ -3966,26 +3641,26 @@ static Range<int> getJZoneRange(const gmx_domdec_zones_t* ddZones,
     else if (iZone == 0)
     {
         /* Non-local: we need to avoid the local (zone 0 vs 0) interactions */
-        return { 1, *ddZones->iZones[iZone].jZoneRange.end() };
+        return { 1, ddZones->jZoneRange(iZone).end() };
     }
     else
     {
         /* Non-local with non-local i-zone: use all j-zones */
-        return ddZones->iZones[iZone].jZoneRange;
+        return ddZones->jZoneRange(iZone);
     }
 }
 
 //! Prepares CPU lists produced by the search for dynamic pruning
-static void prepareListsForDynamicPruning(gmx::ArrayRef<NbnxnPairlistCpu> lists);
+static void prepareListsForDynamicPruning(ArrayRef<NbnxnPairlistCpu> lists);
 
-void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
-                                     const Nbnxm::GridSet&         gridSet,
-                                     gmx::ArrayRef<PairsearchWork> searchWork,
-                                     nbnxn_atomdata_t*             nbat,
-                                     const ListOfLists<int>&       exclusions,
-                                     const int                     minimumIlistCountForGpuBalancing,
-                                     t_nrnb*                       nrnb,
-                                     SearchCycleCounting*          searchCycleCounting)
+void PairlistSet::constructPairlists(InteractionLocality      locality,
+                                     const GridSet&           gridSet,
+                                     ArrayRef<PairsearchWork> searchWork,
+                                     nbnxn_atomdata_t*        nbat,
+                                     const ListOfLists<int>&  exclusions,
+                                     const int                minimumIlistCountForGpuBalancing,
+                                     t_nrnb*                  nrnb,
+                                     SearchCycleCounting*     searchCycleCounting)
 {
     const real rlist = params_.rlistOuter;
 
@@ -3996,11 +3671,10 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
         fprintf(debug, "ns making %d nblists\n", numLists);
     }
 
-    nbat->bUseBufferFlags = (nbat->out.size() > 1);
     /* We should re-init the flags before making the first list */
-    if (nbat->bUseBufferFlags && locality == InteractionLocality::Local)
+    if (nbat->useBufferFlags() && locality == InteractionLocality::Local)
     {
-        resizeAndZeroBufferFlags(&nbat->buffer_flags, nbat->numAtoms());
+        resizeAndZeroBufferFlags(&nbat->bufferFlags(), nbat->numAtoms());
     }
 
     int   nsubpair_target  = 0;
@@ -4029,7 +3703,7 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
         }
     }
 
-    const gmx_domdec_zones_t* ddZones = gridSet.domainSetup().zones;
+    const gmx::DomdecZones* ddZones = gridSet.domainSetup().zones;
     GMX_ASSERT(locality == InteractionLocality::Local || ddZones != nullptr,
                "Nonlocal interaction locality with null ddZones.");
 
@@ -4061,7 +3735,7 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
             /* With GPU: generate progressively smaller lists for
              * load balancing for local only or non-local with 2 zones.
              */
-            const bool progBal = (locality == InteractionLocality::Local || ddZones->n <= 2);
+            const bool progBal = (locality == InteractionLocality::Local || ddZones->numZones() <= 2);
 
 #pragma omp parallel for num_threads(numLists) schedule(static)
             for (int th = 0; th < numLists; th++)
@@ -4071,7 +3745,7 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
                     /* Re-init the thread-local work flag data before making
                      * the first list (not an elegant conditional).
                      */
-                    if (nbat->bUseBufferFlags && (iZone == 0 && jZone == 0))
+                    if (nbat->useBufferFlags() && (iZone == 0 && jZone == 0))
                     {
                         resizeAndZeroBufferFlags(&searchWork[th].buffer_flags, nbat->numAtoms());
                     }
@@ -4101,7 +3775,7 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
                                                  rlist,
                                                  params_.pairlistType,
                                                  ci_block,
-                                                 nbat->bUseBufferFlags,
+                                                 nbat->useBufferFlags(),
                                                  nsubpair_target,
                                                  progBal,
                                                  nsubpair_tot_est,
@@ -4121,7 +3795,7 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
                                                  rlist,
                                                  params_.pairlistType,
                                                  ci_block,
-                                                 nbat->bUseBufferFlags,
+                                                 nbat->useBufferFlags(),
                                                  nsubpair_target,
                                                  progBal,
                                                  nsubpair_tot_est,
@@ -4165,7 +3839,7 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
                 }
             }
             const int nap = isCpuType_ ? cpuLists_[0].na_ci * cpuLists_[0].na_cj
-                                       : gmx::square(gpuLists_[0].na_ci);
+                                       : square(gpuLists_[0].na_ci);
 
             natpair_ljq_ = (np_tot - np_noq) * nap - np_hlj * nap / 2;
             natpair_lj_  = np_noq * nap;
@@ -4180,7 +3854,7 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
                     searchCycleCounting->start(enbsCCcombine);
                 }
 
-                combine_nblists(gmx::constArrayRefFromArray(&gpuLists_[1], numLists - 1), &gpuLists_[0]);
+                combine_nblists(constArrayRefFromArray(&gpuLists_[1], numLists - 1), &gpuLists_[0]);
 
                 if (searchCycleCounting)
                 {
@@ -4221,9 +3895,9 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
         }
     }
 
-    if (nbat->bUseBufferFlags)
+    if (nbat->useBufferFlags())
     {
-        reduce_buffer_flags(searchWork, numLists, nbat->buffer_flags);
+        reduce_buffer_flags(searchWork, numLists, nbat->bufferFlags());
     }
 
     if (gridSet.haveFep())
@@ -4281,9 +3955,9 @@ void PairlistSet::constructPairlists(gmx::InteractionLocality      locality,
             }
         }
 
-        if (nbat->bUseBufferFlags)
+        if (nbat->useBufferFlags())
         {
-            print_reduction_cost(nbat->buffer_flags, numLists);
+            print_reduction_cost(nbat->bufferFlags(), numLists);
         }
     }
 
@@ -4315,7 +3989,8 @@ void PairlistSets::construct(const InteractionLocality iLocality,
      */
     GMX_RELEASE_ASSERT(
             exclusions.empty() || (!ddZones && exclusions.ssize() == gridSet.numRealAtomsTotal())
-                    || (ddZones && exclusions.ssize() == ddZones->cg_range[ddZones->iZones.size()]),
+                    || (ddZones
+                        && exclusions.ssize() == *ddZones->atomRange(ddZones->numIZones() - 1).end()),
             "exclusions should either be empty or the number of lists should match the number of "
             "local i-atoms");
 
@@ -4363,7 +4038,7 @@ void nonbonded_verlet_t::constructPairlist(const InteractionLocality iLocality,
          *
          * NOTE: The launch overhead is currently not timed separately
          */
-        Nbnxm::gpu_init_pairlist(gpuNbv_, pairlistSets().pairlistSet(iLocality).gpuList(), iLocality);
+        gpu_init_pairlist(gpuNbv_, pairlistSets().pairlistSet(iLocality).gpuList(), iLocality);
     }
 
     /* With FEP we might need to check that we have all perturbed inclusions within rlist */
@@ -4381,7 +4056,7 @@ void nonbonded_verlet_t::constructPairlist(const InteractionLocality iLocality,
     }
 }
 
-static void prepareListsForDynamicPruning(gmx::ArrayRef<NbnxnPairlistCpu> lists)
+static void prepareListsForDynamicPruning(ArrayRef<NbnxnPairlistCpu> lists)
 {
     /* TODO: Restructure the lists so we have actual outer and inner
      *       list objects so we can set a single pointer instead of
@@ -4401,3 +4076,5 @@ static void prepareListsForDynamicPruning(gmx::ArrayRef<NbnxnPairlistCpu> lists)
         std::swap(list.cj.list_, list.cjOuter);
     }
 }
+
+} // namespace gmx

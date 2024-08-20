@@ -46,12 +46,19 @@
 #include <cstdlib>
 
 #include <algorithm>
+#include <array>
+#include <filesystem>
 #include <memory>
 #include <numeric>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "gromacs/applied_forces/awh/awh.h"
 #include "gromacs/applied_forces/awh/read_params.h"
 #include "gromacs/commandline/filenm.h"
+#include "gromacs/compat/pointers.h"
 #include "gromacs/domdec/collect.h"
 #include "gromacs/domdec/dlbtiming.h"
 #include "gromacs/domdec/domdec.h"
@@ -64,16 +71,21 @@
 #include "gromacs/essentialdynamics/edsam.h"
 #include "gromacs/ewald/pme_load_balancing.h"
 #include "gromacs/ewald/pme_pp.h"
+#include "gromacs/fileio/enxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/gpu_utils/device_stream_manager.h"
 #include "gromacs/gpu_utils/gpu_utils.h"
+#include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/imd/imd.h"
 #include "gromacs/listed_forces/listed_forces.h"
 #include "gromacs/listed_forces/listed_forces_gpu.h"
+#include "gromacs/math/arrayrefwithpadding.h"
 #include "gromacs/math/boxmatrix.h"
 #include "gromacs/math/functions.h"
+#include "gromacs/math/matrix.h"
+#include "gromacs/math/paddedvector.h"
 #include "gromacs/math/vec.h"
 #include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/checkpointhandler.h"
@@ -113,6 +125,7 @@
 #include "gromacs/mdtypes/awh_params.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/df_history.h"
+#include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/energyhistory.h"
 #include "gromacs/mdtypes/fcdata.h"
 #include "gromacs/mdtypes/forcebuffers.h"
@@ -121,12 +134,14 @@
 #include "gromacs/mdtypes/iforceprovider.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/interaction_const.h"
+#include "gromacs/mdtypes/locality.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/mdtypes/mdrunoptions.h"
 #include "gromacs/mdtypes/multipletimestepping.h"
 #include "gromacs/mdtypes/observableshistory.h"
 #include "gromacs/mdtypes/observablesreducer.h"
+#include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/mdtypes/pullhistory.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/mdtypes/state.h"
@@ -143,12 +158,17 @@
 #include "gromacs/timing/walltime_accounting.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/idef.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/topology/topology_enums.h"
 #include "gromacs/trajectory/trajectoryframe.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
@@ -156,6 +176,10 @@
 #include "legacysimulator.h"
 #include "replicaexchange.h"
 #include "shellfc.h"
+
+struct gmx_mdoutf;
+struct gmx_shellfc_t;
+struct pme_load_balancing_t;
 
 using gmx::SimulationSignaller;
 
@@ -296,7 +320,7 @@ void gmx::LegacySimulator::do_md()
             // Inter-simulation signal communication does not need to happen
             // often, so we use a minimum of 200 steps to reduce overhead.
             const int c_minimumInterSimulationSignallingInterval = 200;
-            nstSignalComm = ((c_minimumInterSimulationSignallingInterval + nstglobalcomm - 1) / nstglobalcomm)
+            nstSignalComm = gmx::divideRoundUp(c_minimumInterSimulationSignallingInterval, nstglobalcomm)
                             * nstglobalcomm;
         }
     }
@@ -575,7 +599,7 @@ void gmx::LegacySimulator::do_md()
             /* Constrain the initial coordinates and velocities */
             do_constrain_first(fpLog_,
                                constr_,
-                               ir,
+                               *ir,
                                md->nr,
                                md->homenr,
                                state_->x.arrayRefWithPadding(),
@@ -1458,7 +1482,7 @@ void gmx::LegacySimulator::do_md()
                 /* if we have constraints, we have to remove the kinetic energy parallel to the bonds */
                 if (constr_ && bIfRandomize)
                 {
-                    constrain_velocities(constr_, do_log, do_ene, step, state_, nullptr, false, nullptr);
+                    constrain_velocities(constr_, do_log || do_ene, step, state_, nullptr, false, nullptr);
                 }
             }
             /* Box is changed in update() when we do pressure coupling,
@@ -1480,7 +1504,6 @@ void gmx::LegacySimulator::do_md()
                 trotter_update(ir,
                                step,
                                ekind_,
-                               enerd_,
                                state_,
                                total_vir,
                                md->homenr,
@@ -1606,12 +1629,14 @@ void gmx::LegacySimulator::do_md()
                 else
                 {
                     /* With multiple time stepping we need to do an additional normal
-                     * update step to obtain the virial, as the actual MTS integration
+                     * update step to obtain the virial and dH/dl, as the actual MTS integration
                      * using an acceleration where the slow forces are multiplied by mtsFactor.
                      * Using that acceleration would result in a virial with the slow
                      * force contribution would be a factor mtsFactor too large.
                      */
-                    if (simulationWork.useMts && bCalcVir && constr_ != nullptr)
+                    const bool separateVirialConstraining =
+                            (simulationWork.useMts && (bCalcVir || computeDHDL) && constr_ != nullptr);
+                    if (separateVirialConstraining)
                     {
                         upd.update_for_constraint_virial(*ir,
                                                          md->homenr,
@@ -1622,15 +1647,21 @@ void gmx::LegacySimulator::do_md()
                                                          f.view().forceWithPadding(),
                                                          *ekind_);
 
-                        constrain_coordinates(constr_,
-                                              do_log,
-                                              do_ene,
-                                              step,
-                                              state_,
-                                              upd.xp()->arrayRefWithPadding(),
-                                              &dvdl_constr,
-                                              bCalcVir,
-                                              shake_vir);
+                        // Call apply() directly so we can avoid constraining the velocities
+                        constr_->apply(false,
+                                       step,
+                                       1,
+                                       1.0,
+                                       state_->x.arrayRefWithPadding(),
+                                       upd.xp()->arrayRefWithPadding(),
+                                       {},
+                                       state_->box,
+                                       state_->lambda[FreeEnergyPerturbationCouplingType::Bonded],
+                                       &dvdl_constr,
+                                       {},
+                                       bCalcVir,
+                                       shake_vir,
+                                       ConstraintVariable::Positions);
                     }
 
                     ArrayRefWithPadding<const RVec> forceCombined =
@@ -1656,13 +1687,12 @@ void gmx::LegacySimulator::do_md()
                     wallcycle_stop(wallCycleCounters_, WallCycleCounter::Update);
 
                     constrain_coordinates(constr_,
-                                          do_log,
-                                          do_ene,
+                                          do_log || do_ene,
                                           step,
                                           state_,
                                           upd.xp()->arrayRefWithPadding(),
-                                          &dvdl_constr,
-                                          bCalcVir && !simulationWork.useMts,
+                                          separateVirialConstraining ? nullptr : &dvdl_constr,
+                                          bCalcVir && !separateVirialConstraining,
                                           shake_vir);
 
                     upd.update_sd_second_half(*ir,

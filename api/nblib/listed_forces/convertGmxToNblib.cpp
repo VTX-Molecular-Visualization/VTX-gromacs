@@ -38,7 +38,7 @@
  * the listed forces parameters for NBLIB
  *
  * To be used to read system topology from TPR files
- * and construct NBLIB objects from it
+ * and construct NB-LIB objects from it
  *
  * \author Victor Holanda <victor.holanda@cscs.ch>
  * \author Joe Jordan <ejjordan@kth.se>
@@ -49,9 +49,24 @@
 #ifndef NBLIB_LISTEDFORCES_CONVERTGMXTONBLIB_H
 #define NBLIB_LISTEDFORCES_CONVERTGMXTONBLIB_H
 
+#include <cmath>
+#include <cstddef>
+
+#include <algorithm>
+#include <array>
 #include <memory>
+#include <type_traits>
+#include <vector>
 
 #include "listed_forces/conversionscommon.h"
+
+#include "gromacs/topology/idef.h"
+
+#include "nblib/listed_forces/bondtypes.h"
+#include "nblib/listed_forces/definitions.h"
+#include "nblib/particletype.h"
+#include "nblib/util/traits.hpp"
+#include "nblib/util/util.hpp"
 
 namespace nblib
 {
@@ -187,7 +202,7 @@ inline void transferParametersGmxToNblib(const t_iparams&                iparams
     interactionData.parameters.push_back(properDihedral);
 }
 
-//! \brief Ryckaert-Bellman Dihedral parameter transfer function
+//! \brief Ryckaert-Belleman Dihedral parameter transfer function
 template<>
 inline void transferParametersGmxToNblib(const t_iparams&                          iparams,
                                          ListedTypeData<RyckaertBellemanDihedral>& interactionData)

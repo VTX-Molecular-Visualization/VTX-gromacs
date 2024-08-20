@@ -41,11 +41,19 @@
 
 #include "gromacs/tools/make_ndx.h"
 
+#include <string>
+
+#include <gtest/gtest.h>
+
 #include "testutils/cmdlinetest.h"
 #include "testutils/stdiohelper.h"
 #include "testutils/testfilemanager.h"
 #include "testutils/textblockmatchers.h"
 
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -114,4 +122,18 @@ TEST_F(GmxMakeNdx, HandlesEmptyIndexFile)
     runTest(sysName, "del 0\nq\n", true);
 }
 
+TEST_F(GmxMakeNdx, Splitres)
+{
+    std::string sysName("spc-dimer");
+    runTest(sysName, "splitres 1\nq\n", false);
+}
+
+TEST_F(GmxMakeNdx, Splitat)
+{
+    std::string sysName("spc-dimer");
+    runTest(sysName, "splitat 1\nq\n", false);
+}
+
 } // namespace
+} // namespace test
+} // namespace gmx

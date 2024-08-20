@@ -40,12 +40,17 @@
 #include <cassert>
 #include <cinttypes>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 
 #include <algorithm>
+#include <array>
+#include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "gromacs/commandline/filenm.h"
 #include "gromacs/domdec/domdec_struct.h"
@@ -53,6 +58,7 @@
 #include "gromacs/domdec/localatomsetmanager.h"
 #include "gromacs/fileio/gmxfio.h"
 #include "gromacs/gmxlib/network.h"
+#include "gromacs/math/arrayrefwithpadding.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
@@ -63,13 +69,17 @@
 #include "gromacs/mdtypes/forceoutput.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pulling/pull_internal.h"
 #include "gromacs/pulling/transformationcoordinate.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/mtop_lookup.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/topology/topology_enums.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
@@ -527,8 +537,8 @@ static void low_get_pull_coord_dr(const pull_t&            pull,
                   "box size (%f).\n%s",
                   pcrd.params_.group[groupIndex0],
                   pcrd.params_.group[groupIndex1],
-                  sqrt(dr2),
-                  sqrt(0.98 * 0.98 * max_dist2),
+                  std::sqrt(dr2),
+                  std::sqrt(0.98 * 0.98 * max_dist2),
                   pcrd.params_.eGeom == PullGroupGeometry::Direction
                           ? "You might want to consider using \"pull-geometry = "
                             "direction-periodic\" instead.\n"
@@ -1082,7 +1092,7 @@ static void do_constraint(struct pull_t* pull,
             switch (coord.params_.eGeom)
             {
                 case PullGroupGeometry::Distance:
-                    bConverged = fabs(dnorm(unc_ij) - coord.value_ref) < pull->params.constr_tol;
+                    bConverged = std::fabs(dnorm(unc_ij) - coord.value_ref) < pull->params.constr_tol;
                     break;
                 case PullGroupGeometry::Direction:
                 case PullGroupGeometry::DirectionPBC:
@@ -1093,7 +1103,7 @@ static void do_constraint(struct pull_t* pull,
                     }
                     inpr = diprod(unc_ij, vec);
                     dsvmul(inpr, vec, unc_ij);
-                    bConverged = fabs(diprod(unc_ij, vec) - coord.value_ref) < pull->params.constr_tol;
+                    bConverged = std::fabs(diprod(unc_ij, vec) - coord.value_ref) < pull->params.constr_tol;
                     break;
                 default:
                     GMX_ASSERT(false,
@@ -1313,7 +1323,7 @@ static PullCoordVectorForces calculateVectorForces(const pull_coord_work_t& pcrd
 
         double cos_theta, cos_theta2;
 
-        cos_theta  = cos(spatialData.value);
+        cos_theta  = std::cos(spatialData.value);
         cos_theta2 = gmx::square(cos_theta);
 
         /* The force at theta = 0, pi is undefined so we should not apply any force.
@@ -1358,7 +1368,7 @@ static PullCoordVectorForces calculateVectorForces(const pull_coord_work_t& pcrd
 
         /* The angle-axis force is exactly the same as the angle force (above) except that in
            this case the second vector (dr23) is replaced by the pull vector. */
-        cos_theta  = cos(spatialData.value);
+        cos_theta  = std::cos(spatialData.value);
         cos_theta2 = gmx::square(cos_theta);
 
         if (cos_theta2 < 1)

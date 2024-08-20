@@ -45,18 +45,31 @@
 
 #include "config.h"
 
+#include <cmath>
+#include <cstdio>
+
+#include <algorithm>
+#include <memory>
 #include <vector>
 
 #include "gromacs/domdec/domdec_network.h"
+#include "gromacs/domdec/domdec_struct.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/df_history.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/block.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/logger.h"
+#include "gromacs/utility/real.h"
 
 #include "atomdistribution.h"
 #include "cellsizes.h"
@@ -530,8 +543,7 @@ static void distributeAtomGroups(const gmx::MDLogger& mdlog,
 
     dd->numHomeAtoms = buf2[0];
     dd->comm->atomRanges.setEnd(DDAtomRanges::Type::Home, buf2[1]);
-    dd->globalAtomGroupIndices.resize(dd->numHomeAtoms);
-    dd->globalAtomIndices.resize(dd->comm->atomRanges.numHomeAtoms());
+    dd->globalAtomIndices.resize(dd->numHomeAtoms);
 
     if (bMain)
     {
@@ -559,14 +571,14 @@ static void distributeAtomGroups(const gmx::MDLogger& mdlog,
                       : gmx::ArrayRef<int>(),
                 bMain ? ma->atomGroups.data() : nullptr,
                 dd->numHomeAtoms,
-                dd->globalAtomGroupIndices.data());
+                dd->globalAtomIndices.data());
 
     if (gmx_debug_at)
     {
         fprintf(debug, "Home charge groups:\n");
         for (int i = 0; i < dd->numHomeAtoms; i++)
         {
-            fprintf(debug, " %d", dd->globalAtomGroupIndices[i]);
+            fprintf(debug, " %d", dd->globalAtomIndices[i]);
             if (i % 10 == 9)
             {
                 fprintf(debug, "\n");

@@ -39,13 +39,22 @@
 
 #include "colvarsoptions.h"
 
-#include <fstream>
+#include <cstddef>
 
+#include <filesystem>
+#include <fstream>
+#include <optional>
+
+#include "gromacs/math/arrayrefwithpadding.h"
 #include "gromacs/math/vec.h"
 #include "gromacs/options/basicoptions.h"
+#include "gromacs/options/ioptionscontainerwithsections.h"
 #include "gromacs/options/optionsection.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/keyvaluetree.h"
 #include "gromacs/utility/keyvaluetreebuilder.h"
 #include "gromacs/utility/keyvaluetreetransform.h"
 #include "gromacs/utility/path.h"
@@ -53,6 +62,9 @@
 #include "gromacs/utility/textreader.h"
 
 #include "colvarspreprocessor.h"
+
+enum class PbcType : int;
+struct gmx_mtop_t;
 
 
 namespace gmx
@@ -131,7 +143,10 @@ void ColvarsOptions::writeInternalParametersToKvt(KeyValueTreeObjectBuilder tree
 {
 
     // Copy the content of the colvars input file into a string for latter save in KVT
-    colvarsConfigString_ = TextReader::readFileToString(colvarsFileName_);
+    if (!colvarsFileName_.empty())
+    {
+        colvarsConfigString_ = TextReader::readFileToString(colvarsFileName_);
+    }
 
     // Write colvars input file as a string
     treeBuilder.addValue<std::string>(c_colvarsModuleName + "-" + c_configStringTag_, colvarsConfigString_);
@@ -271,7 +286,7 @@ void ColvarsOptions::processEdrFilename(const EdrOutputFilename& filename)
     GMX_RELEASE_ASSERT(!filename.edrOutputFilename_.empty(), "Empty name for the *.edr output file");
 
     outputPrefix_ =
-            stripExtension(std::filesystem::path(filename.edrOutputFilename_).filename()).u8string();
+            stripExtension(std::filesystem::path(filename.edrOutputFilename_).filename()).string();
 }
 
 

@@ -225,11 +225,17 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 
 #include <exception>
 #include <memory>
 
+#include "gromacs/selection/indexutil.h"
+#include "gromacs/selection/position.h"
 #include "gromacs/selection/selection.h"
+#include "gromacs/selection/selparam.h"
+#include "gromacs/selection/selvalue.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/smalloc.h"
@@ -593,17 +599,16 @@ gmx::SelectionTreeElementPointer _gmx_sel_init_arithmetic(const gmx::SelectionTr
     sel->v.type = REAL_VALUE;
     switch (op)
     {
-        case '+': sel->u.arith.type = ARITH_PLUS; break;
-        case '-': sel->u.arith.type = (right ? ARITH_MINUS : ARITH_NEG); break;
-        case '*': sel->u.arith.type = ARITH_MULT; break;
-        case '/': sel->u.arith.type = ARITH_DIV; break;
-        case '^': sel->u.arith.type = ARITH_EXP; break;
+        case '+': sel->u.type = ARITH_PLUS; break;
+        case '-': sel->u.type = (right ? ARITH_MINUS : ARITH_NEG); break;
+        case '*': sel->u.type = ARITH_MULT; break;
+        case '/': sel->u.type = ARITH_DIV; break;
+        case '^': sel->u.type = ARITH_EXP; break;
     }
-    char buf[2]{ op, 0 };
+    std::string buf(1, op);
     sel->setName(buf);
-    sel->u.arith.opstr = gmx_strdup(buf);
-    sel->child         = left;
-    sel->child->next   = right;
+    sel->child       = left;
+    sel->child->next = right;
     return sel;
 }
 

@@ -46,13 +46,19 @@
 
 #include <cassert>
 #include <cinttypes>
+#include <cmath>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <bitset>
+#include <filesystem>
 #include <memory>
 #include <optional>
+#include <utility>
+#include <variant>
+#include <vector>
 
 #include "gromacs/commandline/filenm.h"
 #include "gromacs/domdec/builder.h"
@@ -69,6 +75,7 @@
 #include "gromacs/ewald/pme_only.h"
 #include "gromacs/ewald/pme_pp_comm_gpu.h"
 #include "gromacs/fileio/checkpoint.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/gmxfio.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/tpxio.h"
@@ -76,7 +83,9 @@
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/gpu_utils/device_stream_manager.h"
+#include "gromacs/gpu_utils/gpu_utils.h"
 #include "gromacs/gpu_utils/gpueventsynchronizer_helpers.h"
+#include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/gpu_utils/nvshmem_utils.h"
 #include "gromacs/hardware/cpuinfo.h"
 #include "gromacs/hardware/detecthardware.h"
@@ -89,11 +98,14 @@
 #include "gromacs/listed_forces/listed_forces_gpu.h"
 #include "gromacs/listed_forces/orires.h"
 #include "gromacs/math/functions.h"
+#include "gromacs/math/matrix.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/boxdeformation.h"
 #include "gromacs/mdlib/broadcaststructs.h"
 #include "gromacs/mdlib/calc_verletbuf.h"
+#include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/dispersioncorrection.h"
 #include "gromacs/mdlib/enerdata_utils.h"
 #include "gromacs/mdlib/force.h"
@@ -119,6 +131,7 @@
 #include "gromacs/mdrunutility/multisim.h"
 #include "gromacs/mdrunutility/printtime.h"
 #include "gromacs/mdrunutility/threadaffinity.h"
+#include "gromacs/mdtypes/atominfo.h"
 #include "gromacs/mdtypes/checkpointdata.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/enerdata.h"
@@ -127,12 +140,14 @@
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/interaction_const.h"
+#include "gromacs/mdtypes/locality.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/mdtypes/mdrunoptions.h"
 #include "gromacs/mdtypes/multipletimestepping.h"
 #include "gromacs/mdtypes/observableshistory.h"
 #include "gromacs/mdtypes/observablesreducer.h"
+#include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/mdtypes/state_propagator_data_gpu.h"
@@ -156,11 +171,16 @@
 #include "gromacs/timing/gpu_timing.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/timing/wallcyclereporting.h"
+#include "gromacs/timing/walltime_accounting.h"
+#include "gromacs/topology/block.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/topology/topology_enums.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/basenetwork.h"
 #include "gromacs/utility/cstringutil.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/filestream.h"
@@ -180,6 +200,13 @@
 #include "membedholder.h"
 #include "replicaexchange.h"
 #include "simulatorbuilder.h"
+
+class DeviceContext;
+class DeviceStream;
+struct DeviceInformation;
+struct gmx_pme_t;
+struct pull_t;
+struct t_swap;
 
 namespace gmx
 {
@@ -352,7 +379,8 @@ static DevelopmentFeatureFlags manageDevelopmentFeatures(const gmx::MDLogger& md
                     .appendText(
                             "GMX_ENABLE_NVSHMEM environment variable is detected, "
                             "but GROMACS was built without NVSHMEM support. "
-                            "NVSHMEM will be disabled.");
+                            "Direct use of NVSHMEM will be disabled. "
+                            "NVSHMEM may still be used indirectly if cuFFTMp is enabled. ");
         }
     }
 
@@ -628,7 +656,7 @@ static void override_nsteps_cmdline(const gmx::MDLogger& mdlog, int64_t nsteps_c
             sprintf(sbuf_msg,
                     "Overriding nsteps with value passed on the command line: %s steps, %.3g ps",
                     gmx_step_str(nsteps_cmdline, sbuf_steps),
-                    fabs(nsteps_cmdline * ir->delta_t));
+                    std::fabs(nsteps_cmdline * ir->delta_t));
         }
         else
         {
@@ -847,7 +875,7 @@ static void finish_run(FILE*                     fplog,
     if (printReport)
     {
         auto* nbnxn_gpu_timings =
-                (nbv != nullptr && nbv->useGpu()) ? Nbnxm::gpu_get_timings(nbv->gpuNbv()) : nullptr;
+                (nbv != nullptr && nbv->useGpu()) ? gpu_get_timings(nbv->gpuNbv()) : nullptr;
         gmx_wallclock_gpu_pme_t pme_gpu_timings = {};
 
         if (pme_gpu_task_enabled(pme))
@@ -1426,6 +1454,7 @@ int Mdrunner::mdrunner()
         updateGroups            = makeUpdateGroups(mdlog,
                                         std::move(updateGroupingsPerMoleculeType),
                                         maxUpdateGroupRadius,
+                                        doRerun,
                                         useDomainDecomposition,
                                         systemHasConstraintsOrVsites(mtop),
                                         cutoffMargin);
@@ -1633,7 +1662,7 @@ int Mdrunner::mdrunner()
     if (runScheduleWork.simulationWork.useGpuDirectCommunication && GMX_GPU_CUDA)
     {
         // Don't enable event counting with GPU Direct comm, see #3988.
-        gmx::internal::disableCudaEventConsumptionCounting();
+        gmx::internal::disableGpuEventConsumptionCounting();
     }
 
     if (isSimulationMainRank && GMX_GPU_SYCL)
@@ -1799,6 +1828,8 @@ int Mdrunner::mdrunner()
         setupNotifier.notify(mtop);
         setupNotifier.notify(inputrec->pbcType);
         setupNotifier.notify(SimulationTimeStep{ inputrec->delta_t });
+        setupNotifier.notify(startingBehavior);
+        setupNotifier.notify(EnsembleTemperature{ *inputrec });
 
         /* Initiate forcerecord */
         fr                 = std::make_unique<t_forcerec>();
@@ -1854,31 +1885,31 @@ int Mdrunner::mdrunner()
                     runScheduleWork.simulationWork.useNvshmem);
         }
 
-        fr->nbv = Nbnxm::init_nb_verlet(
-                mdlog,
-                *inputrec,
-                *fr,
-                cr,
-                *hwinfo_,
-                runScheduleWork.simulationWork.useGpuNonbonded,
-                deviceStreamManager.get(),
-                mtop,
-                PAR(cr) ? &observablesReducerBuilder : nullptr,
-                isSimulationMainRank ? globalState->x : gmx::ArrayRef<const gmx::RVec>(),
-                box,
-                wcycle.get());
+        fr->nbv = init_nb_verlet(mdlog,
+                                 *inputrec,
+                                 *fr,
+                                 cr,
+                                 *hwinfo_,
+                                 runScheduleWork.simulationWork.useGpuNonbonded,
+                                 deviceStreamManager.get(),
+                                 mtop,
+                                 PAR(cr) ? &observablesReducerBuilder : nullptr,
+                                 isSimulationMainRank ? globalState->x : gmx::ArrayRef<const gmx::RVec>(),
+                                 box,
+                                 wcycle.get());
         // TODO: Move the logic below to a GPU bonded builder
         if (runScheduleWork.simulationWork.useGpuBonded)
         {
             GMX_RELEASE_ASSERT(deviceStreamManager != nullptr,
                                "GPU device stream manager should be valid in order to use GPU "
                                "version of bonded forces.");
-            fr->listedForcesGpu = std::make_unique<ListedForcesGpu>(mtop.ffparams,
-                                                                    fr->ic->epsfac * fr->fudgeQQ,
-                                                                    *deviceInfo,
-                                                                    deviceStreamManager->context(),
-                                                                    deviceStreamManager->bondedStream(),
-                                                                    wcycle.get());
+            fr->listedForcesGpu =
+                    std::make_unique<ListedForcesGpu>(mtop.ffparams,
+                                                      fr->ic->epsfac * fr->fudgeQQ,
+                                                      inputrec->opts.ngener - inputrec->nwall,
+                                                      deviceStreamManager->context(),
+                                                      deviceStreamManager->bondedStream(),
+                                                      wcycle.get());
         }
         fr->longRangeNonbondeds = std::make_unique<CpuPpLongRangeNonbondeds>(fr->n_tpi,
                                                                              fr->ic->ewaldcoeff_q,
@@ -1956,7 +1987,7 @@ int Mdrunner::mdrunner()
         /* This is a PME only node */
 
         GMX_ASSERT(globalState == nullptr,
-                   "We don't need the state on a PME only rank and expect it to be unitialized");
+                   "We don't need the state on a PME only rank and expect it to be uninitialized");
 
         ewaldcoeff_q  = calc_ewaldcoeff_q(inputrec->rcoulomb, inputrec->ewald_rtol);
         ewaldcoeff_lj = calc_ewaldcoeff_lj(inputrec->rvdw, inputrec->ewald_rtol_lj);
@@ -2055,7 +2086,8 @@ int Mdrunner::mdrunner()
                                        deviceContext,
                                        pmeStream,
                                        pmeGpuProgram.get(),
-                                       mdlog);
+                                       mdlog,
+                                       nullptr);
             }
             GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
         }
@@ -2122,7 +2154,7 @@ int Mdrunner::mdrunner()
                                       mtop,
                                       cr,
                                       &atomSets,
-                                      inputrec->fepvals->init_lambda);
+                                      inputrec->fepvals->init_lambda_without_states);
                 if (inputrec->pull->bXOutAverage || inputrec->pull->bFOutAverage)
                 {
                     initPullHistory(pull_work, &observablesHistory);
@@ -2230,11 +2262,15 @@ int Mdrunner::mdrunner()
                         deviceStreamManager->context(),
                         deviceStreamManager->stream(gmx::DeviceStreamType::NonBondedLocal),
                         wcycle.get());
-                fr->gpuForceReduction[gmx::AtomLocality::NonLocal] =
-                        std::make_unique<gmx::GpuForceReduction>(
-                                deviceStreamManager->context(),
-                                deviceStreamManager->stream(gmx::DeviceStreamType::NonBondedNonLocal),
-                                wcycle.get());
+
+                if (runScheduleWork.simulationWork.havePpDomainDecomposition)
+                {
+                    fr->gpuForceReduction[gmx::AtomLocality::NonLocal] =
+                            std::make_unique<gmx::GpuForceReduction>(
+                                    deviceStreamManager->context(),
+                                    deviceStreamManager->stream(gmx::DeviceStreamType::NonBondedNonLocal),
+                                    wcycle.get());
+                }
 
                 if (runScheduleWork.simulationWork.useMdGpuGraph)
                 {
@@ -2415,7 +2451,7 @@ int Mdrunner::mdrunner()
             // resetting the device before MPI_Finalize() results in crashes inside UCX
             // This can also cause issues in tests that invoke mdrunner() multiple
             // times in the same process; ref #3952.
-            releaseDevice(deviceInfo);
+            releaseDevice();
         }
     }
     GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR

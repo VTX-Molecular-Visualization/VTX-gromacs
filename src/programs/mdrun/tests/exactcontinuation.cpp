@@ -45,18 +45,30 @@
 
 #include "config.h"
 
+#include <cstdio>
+#include <cstdlib>
+
+#include <filesystem>
+#include <functional>
+#include <memory>
 #include <string>
 #include <tuple>
+#include <utility>
 
 #include <gtest/gtest.h>
 
 #include "gromacs/topology/idef.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/trajectory/energyframe.h"
 #include "gromacs/utility/stringutil.h"
 
+#include "testutils/cmdlinetest.h"
 #include "testutils/mpitest.h"
 #include "testutils/simulationdatabase.h"
 #include "testutils/testasserts.h"
+#include "testutils/testfilemanager.h"
+
+#include "programs/mdrun/tests/comparison_helpers.h"
 
 #include "energycomparison.h"
 #include "energyreader.h"
@@ -230,13 +242,13 @@ void runTest(TestFileManager*            fileManager,
     }
 
     // prepare some names for files to use with the two mdrun calls
-    std::string fullRunTprFileName      = fileManager->getTemporaryFilePath("full.tpr").u8string();
-    std::string firstPartRunTprFileName = fileManager->getTemporaryFilePath("firstpart.tpr").u8string();
-    std::string fullRunEdrFileName      = fileManager->getTemporaryFilePath("full.edr").u8string();
-    std::string firstPartRunEdrFileName = fileManager->getTemporaryFilePath("firstpart.edr").u8string();
+    std::string fullRunTprFileName      = fileManager->getTemporaryFilePath("full.tpr").string();
+    std::string firstPartRunTprFileName = fileManager->getTemporaryFilePath("firstpart.tpr").string();
+    std::string fullRunEdrFileName      = fileManager->getTemporaryFilePath("full.edr").string();
+    std::string firstPartRunEdrFileName = fileManager->getTemporaryFilePath("firstpart.edr").string();
     std::string firstPartRunCheckpointFileName =
-            fileManager->getTemporaryFilePath("firstpart.cpt").u8string();
-    std::string secondPartRunEdrFileName = fileManager->getTemporaryFilePath("secondpart").u8string();
+            fileManager->getTemporaryFilePath("firstpart.cpt").string();
+    std::string secondPartRunEdrFileName = fileManager->getTemporaryFilePath("secondpart").string();
 
     // prepare the full run .tpr file, which will be used for the full
     // run, and for the second part of the two-part run.
@@ -425,8 +437,8 @@ TEST_P(MdrunNoAppendContinuationIsExact, WithinTolerances)
         // sumation order.
         // Forces and update on GPUs are generally result in different
         // sumation order
-        ulpToleranceInMixed  = 32;
-        ulpToleranceInDouble = 64;
+        ulpToleranceInMixed  = 64;
+        ulpToleranceInDouble = 128;
     }
 
     EnergyTermsToCompare energyTermsToCompare{

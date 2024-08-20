@@ -44,8 +44,12 @@
 #include "updategroups.h"
 
 #include <cmath>
+#include <cstdlib>
 
+#include <algorithm>
+#include <array>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 
 #include "gromacs/math/functions.h"
@@ -53,12 +57,15 @@
 #include "gromacs/math/utilities.h"
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/block.h"
+#include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_atomloops.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/message_string_collector.h"
@@ -778,6 +785,11 @@ UpdateGroups::UpdateGroups(std::vector<RangePartitioning>&& updateGroupingPerMol
 {
 }
 
+ArrayRef<const RangePartitioning> UpdateGroups::updateGroupingPerMoleculeType() const
+{
+    return updateGroupingPerMoleculeType_;
+}
+
 bool systemHasConstraintsOrVsites(const gmx_mtop_t& mtop)
 {
     IListRange ilistRange(mtop);
@@ -789,6 +801,7 @@ bool systemHasConstraintsOrVsites(const gmx_mtop_t& mtop)
 UpdateGroups makeUpdateGroups(const gmx::MDLogger&             mdlog,
                               std::vector<RangePartitioning>&& updateGroupingPerMoleculeType,
                               const real                       maxUpdateGroupRadius,
+                              const bool                       doRerun,
                               const bool                       useDomainDecomposition,
                               const bool                       systemHasConstraintsOrVsites,
                               const real                       cutoffMargin)
@@ -798,6 +811,8 @@ UpdateGroups makeUpdateGroups(const gmx::MDLogger&             mdlog,
     MessageStringCollector messages;
 
     messages.startContext("When checking whether update groups are usable:");
+
+    messages.appendIf(doRerun, "Rerun does not support update groups");
 
     messages.appendIf(!useDomainDecomposition,
                       "Domain decomposition is not active, so there is no need for update groups");

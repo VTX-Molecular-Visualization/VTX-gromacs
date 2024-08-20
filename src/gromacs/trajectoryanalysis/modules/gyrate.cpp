@@ -43,16 +43,22 @@
 
 #include "gyrate.h"
 
+#include <cmath>
+#include <cstddef>
+
 #include <algorithm>
 #include <memory>
+#include <string>
 
 #include "gromacs/analysisdata/analysisdata.h"
 #include "gromacs/analysisdata/modules/average.h"
 #include "gromacs/analysisdata/modules/plot.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/options/ioptionscontainer.h"
+#include "gromacs/options/optionfiletype.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/rmpbc.h"
 #include "gromacs/selection/selection.h"
@@ -61,6 +67,10 @@
 #include "gromacs/trajectoryanalysis/analysismodule.h"
 #include "gromacs/trajectoryanalysis/analysissettings.h"
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 
 namespace gmx
 {
@@ -133,7 +143,10 @@ void Gyrate::initOptions(IOptionsContainer* options, TrajectoryAnalysisSettings*
         "The axis components corresponds to the mass-weighted root-mean-square",
         "of the radii components orthogonal to each axis, for example:[PAR]",
         "Rg(x) = sqrt((sum_i w_i (R_i(y)^2 + R_i(z)^2))/(sum_i w_i)).[PAR]",
-        "where w_i is the weight value in the given situation (mass, charge, unit)"
+        "where w_i is the weight value in the given situation (mass, charge, unit)",
+        "[PAR]",
+        "Note that this is a new implementation of the gyrate utility added in",
+        "GROMACS 2024. If you need the old one, use [TT]gmx gyrate-legacy[tt]."
     };
 
     settings->setHelpText(desc);
@@ -239,7 +252,7 @@ void Gyrate::writeOutput() {}
 
 } // namespace
 
-const char GyrateInfo::name[]             = "gyrate-taf";
+const char GyrateInfo::name[]             = "gyrate";
 const char GyrateInfo::shortDescription[] = "Calculate radius of gyration of a molecule";
 
 TrajectoryAnalysisModulePointer GyrateInfo::create()

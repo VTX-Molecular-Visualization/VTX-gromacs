@@ -35,11 +35,17 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
+#include <filesystem>
+#include <string>
 #include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
@@ -47,15 +53,22 @@
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/rmpbc.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 #define EPS0 8.85419E-12
 #define ELC 1.60219E-19
@@ -604,7 +617,7 @@ int gmx_potential(int argc, char* argv[])
     int         ncenter;      /* size of centering group    */
     int**       index;        /* indices for all groups     */
     t_filenm    fnm[] = {
-        /* files for g_order       */
+        /* files for gmx order       */
         { efTRX, "-f", nullptr, ffREAD },      /* trajectory file             */
         { efNDX, nullptr, nullptr, ffREAD },   /* index file          */
         { efTPR, nullptr, nullptr, ffREAD },   /* topology file               */

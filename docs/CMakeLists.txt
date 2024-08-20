@@ -87,10 +87,9 @@ endif()
 
 add_subdirectory(doxygen)
 
-# TODO: Consider whether this could just be replaced by using
-# GMX_DEVELOPER_BUILD to control this as well.
 option(GMX_BUILD_MANUAL "Whether to try to configure to build the PDF manual" OFF)
 mark_as_advanced(GMX_BUILD_MANUAL)
+gmx_add_cache_dependency(GMX_BUILD_MANUAL BOOL GMX_DEVELOPER_BUILD ON)
 
 set(MANUAL_BUILD_IS_POSSIBLE ON)
 set(MANUAL_BUILD_NOT_POSSIBLE_REASON)
@@ -172,7 +171,6 @@ if (SPHINX_FOUND)
         # PNG formated plot files that don't need to be converted into PNG
         # for the web page.
         reference-manual/plots/GMX_logos/gmx_falcon_blue.png
-        reference-manual/plots/adress.png
         reference-manual/plots/plotje.png
         reference-manual/plots/xvgr.png
         )
@@ -363,8 +361,22 @@ if (SPHINX_FOUND)
         how-to/special.rst
         how-to/visualize.rst
         install-guide/index.rst
+        install-guide/exotic.rst
         reference-manual/plots/GMX_logos/gmx_logo_blue.svg
         release-notes/index.rst
+        release-notes/2025/major/highlights.rst
+        release-notes/2025/major/features.rst
+        release-notes/2025/major/performance.rst
+        release-notes/2025/major/tools.rst
+        release-notes/2025/major/bugs-fixed.rst
+        release-notes/2025/major/removed-functionality.rst
+        release-notes/2025/major/deprecated-functionality.rst
+        release-notes/2025/major/portability.rst
+        release-notes/2025/major/miscellaneous.rst
+        release-notes/2025/major/api.rst
+        release-notes/2024/2024.1.rst
+        release-notes/2024/2024.2.rst
+        release-notes/2024/2024.3.rst
         release-notes/2024/major/highlights.rst
         release-notes/2024/major/features.rst
         release-notes/2024/major/performance.rst
@@ -379,6 +391,8 @@ if (SPHINX_FOUND)
         release-notes/2023/2023.2.rst
         release-notes/2023/2023.3.rst
         release-notes/2023/2023.4.rst
+        release-notes/2023/2023.5.rst
+        release-notes/2023/2023.6.rst
         release-notes/2023/major/highlights.rst
         release-notes/2023/major/features.rst
         release-notes/2023/major/performance.rst
@@ -668,6 +682,7 @@ if (SPHINX_FOUND)
             -t do_text
             "${SPHINX_INPUT_DIR}/install-guide"
             "${TEXT_INSTALL_GUIDE_OUTPUT_DIR}"
+            "${SPHINX_INPUT_DIR}/install-guide/index.rst"
         COMMAND
             ${CMAKE_COMMAND} -E rename
             ${TEXT_INSTALL_GUIDE_OUTPUT_DIR}/index.txt

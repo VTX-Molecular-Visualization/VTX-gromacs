@@ -43,9 +43,18 @@
 
 #include "qmmminputgenerator.h"
 
+#include <cmath>
+#include <cstddef>
+
+#include <vector>
+
+#include "gromacs/applied_forces/qmmm/qmmmtypes.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/stringutil.h"
+
+enum class PbcType : int;
 
 namespace gmx
 {
@@ -486,7 +495,7 @@ RVec computeQMBoxVec(const RVec& a, const RVec& b, const RVec& c, real h, real m
     dx /= dx.norm();
 
     // Transform a
-    res = h / static_cast<real>(fabs(vec0.dot(dx))) * a;
+    res = h / std::fabs(vec0.dot(dx)) * a;
 
     // If vector is smaller than minL then scale it up
     if (res.norm() < minNorm)

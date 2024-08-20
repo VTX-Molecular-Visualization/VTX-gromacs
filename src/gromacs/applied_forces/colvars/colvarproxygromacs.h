@@ -42,10 +42,15 @@
 #ifndef GMX_APPLIED_FORCES_COLVARPROXYGROMACS_H
 #define GMX_APPLIED_FORCES_COLVARPROXYGROMACS_H
 
+#include <map>
+#include <string>
+
 // NOLINTBEGIN
 // Disabling clang-tidy checks on Colvars library code that is not called directly by GROMACS,
 // or is not even used at all (e.g. code used by NAMD or VMD interfaces)
 #include "external/colvars/colvarproxy.h"
+
+#include "gromacs/utility/real.h"
 // NOLINTEND
 
 #include "gromacs/pbcutil/pbc.h"
@@ -53,6 +58,8 @@
 #include "gromacs/random/threefry.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/utility/logger.h"
+
+enum class PbcType : int;
 
 
 namespace gmx
@@ -124,8 +131,13 @@ public:
 
     //! Print a message to the main log
     void log(std::string const& message) override;
+
     //! Print a message to the main log and let GROMACS handle the error
     void error(std::string const& message) override;
+
+    //! Rename the given file, before overwriting it
+    int backup_file(char const* filename) override;
+
     //! Request to set the units used internally by Colvars
     int set_unit_system(std::string const& unitsIn, bool colvarsDefined) override;
 

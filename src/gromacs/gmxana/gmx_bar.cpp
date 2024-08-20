@@ -35,16 +35,23 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
 #include <limits>
+#include <string>
 #include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/enxio.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/xdr_datatype.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/units.h"
@@ -52,14 +59,18 @@
 #include "gromacs/mdlib/energyoutput.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/trajectory/energyframe.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/snprintf.h"
 #include "gromacs/utility/stringutil.h"
+
+struct gmx_output_env_t;
 
 
 /* Structure for the names of lambda vector components */
@@ -236,10 +247,8 @@ static void lambda_components_add(lambda_components_t* lc, const char* name, siz
         srenew(lc->names, lc->Nalloc);
     }
     snew(lc->names[lc->N], name_length + 1);
-    // clang-format off
     // GCC 12.1 has a false positive about the missing \0. But it is already there, nothing to worry about.
-    GCC_DIAGNOSTIC_IGNORE(-Wstringop-truncation)
-    // clang-format on
+    GCC_DIAGNOSTIC_IGNORE("-Wstringop-truncation")
     std::strncpy(lc->names[lc->N], name, name_length);
     GCC_DIAGNOSTIC_RESET
     lc->N++;
@@ -1148,7 +1157,7 @@ static barres_t* barres_list_create(sim_data_t* sd, int* nres, gmx_bool use_dhdl
             gmx_fatal(FARGS,
                       "There is no path between the states X & Y below that is covered by foreign "
                       "lambdas:\ncannot proceed with BAR.\nUse thermodynamic integration of dH/dl "
-                      "by calculating the averages of dH/dl\nwith g_analyze and integrating "
+                      "by calculating the averages of dH/dl\nwith gmx analyze and integrating "
                       "them.\nAlternatively, use the -extp option if (and only if) the "
                       "Hamiltonian\ndepends linearly on lambda, which is NOT normally the "
                       "case.\n\n%s\n%s\n",

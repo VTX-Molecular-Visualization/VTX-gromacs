@@ -38,10 +38,14 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <array>
+#include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gromacs/fileio/pdbio.h"
@@ -59,10 +63,15 @@
 #include "gromacs/gmxpreprocess/toputil.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/residuetypes.h"
 #include "gromacs/topology/symtab.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/binaryinformation.h"
 #include "gromacs/utility/cstringutil.h"
+#include "gromacs/utility/datafilefinder.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
@@ -137,22 +146,22 @@ bool is_int(double x)
     }
     ix = gmx::roundToInt(x);
 
-    return (fabs(x - ix) < tol);
+    return (std::fabs(x - ix) < tol);
 }
 
 static std::filesystem::path
 choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MDLogger& logger)
 {
     std::vector<gmx::DataFileInfo> ffdirs = fflib_enumerate_forcefields();
-    const int                      nff    = ssize(ffdirs);
+    const int                      nff    = gmx::ssize(ffdirs);
 
     /* Store the force field names in ffs */
     std::vector<std::string> ffs;
     ffs.reserve(ffdirs.size());
     for (int i = 0; i < nff; ++i)
     {
-        ffs.push_back(gmx::stripSuffixIfPresent(ffdirs[i].name_.u8string(),
-                                                fflib_forcefield_dir_ext().u8string().c_str()));
+        ffs.push_back(gmx::stripSuffixIfPresent(ffdirs[i].name_.string(),
+                                                fflib_forcefield_dir_ext().string().c_str()));
     }
 
     int sel;
@@ -260,6 +269,13 @@ choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MD
             }
         }
 
+        GMX_LOG(logger.info)
+                .asParagraph()
+                .appendTextFormatted(
+                        "Note that more recent versions of the CHARMM force field may be "
+                        "downloaded "
+                        "from\nhttp://mackerell.umaryland.edu/charmm_ff.shtml#gromacs.");
+
         GMX_LOG(logger.info).asParagraph().appendTextFormatted("Select the Force Field:");
         for (int i = 0; i < nff; ++i)
         {
@@ -275,7 +291,7 @@ choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MD
                 {
                     GMX_LOG(logger.info)
                             .asParagraph()
-                            .appendTextFormatted("From '%s':", ffdirs[i].dir_.u8string().c_str());
+                            .appendTextFormatted("From '%s':", ffdirs[i].dir_.string().c_str());
                 }
             }
             GMX_LOG(logger.info).asParagraph().appendTextFormatted("%2d: %s", i + 1, desc[i].c_str());
@@ -314,7 +330,7 @@ choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MD
                         "rename or move the force field directory present "
                         "in the current working directory.",
                         ffs[sel].c_str(),
-                        fflib_forcefield_dir_ext().u8string().c_str());
+                        fflib_forcefield_dir_ext().string().c_str());
                 GMX_THROW(gmx::NotImplementedError(message));
             }
         }
@@ -578,7 +594,7 @@ void print_top_comment(FILE* out, const std::filesystem::path& filename, const s
                 ";\tforce field must either be present in the current directory, or the location\n"
                 ";\tspecified in the GMXLIB path variable or with the 'include' mdp file "
                 "option.\n;\n\n",
-                ffdir_parent.u8string().c_str());
+                ffdir_parent.string().c_str());
     }
 }
 
@@ -595,15 +611,15 @@ void print_top_header(FILE*                        out,
 
     fprintf(out,
             "#include \"%s/%s\"\n\n",
-            ffdir.u8string().c_str(),
-            fflib_forcefield_itp().generic_u8string().c_str());
+            ffdir.string().c_str(),
+            fflib_forcefield_itp().generic_string().c_str());
 }
 
 static void print_top_posre(FILE* out, const std::filesystem::path& pr)
 {
     fprintf(out, "; Include Position restraint file\n");
     fprintf(out, "#ifdef POSRES\n");
-    fprintf(out, "#include \"%s\"\n", pr.generic_u8string().c_str());
+    fprintf(out, "#include \"%s\"\n", pr.generic_string().c_str());
     fprintf(out, "#endif\n\n");
 }
 
@@ -613,7 +629,7 @@ static void print_top_water(FILE* out, const std::filesystem::path& ffdir, const
 
     auto waterPath = ffdir;
     waterPath.append(water).replace_extension("itp");
-    fprintf(out, "#include \"%s\"\n", waterPath.generic_u8string().c_str());
+    fprintf(out, "#include \"%s\"\n", waterPath.generic_string().c_str());
 
     fprintf(out, "\n");
     fprintf(out, "#ifdef POSRES_WATER\n");
@@ -630,7 +646,7 @@ static void print_top_water(FILE* out, const std::filesystem::path& ffdir, const
     if (fflib_fexist(ionPath))
     {
         fprintf(out, "; Include topology for ions\n");
-        fprintf(out, "#include \"%s\"\n", ionPath.generic_u8string().c_str());
+        fprintf(out, "#include \"%s\"\n", ionPath.generic_string().c_str());
         fprintf(out, "\n");
     }
 }
@@ -655,7 +671,7 @@ void print_top_mols(FILE*                                      out,
         fprintf(out, "; Include chain topologies\n");
         for (const auto& incl : incls)
         {
-            fprintf(out, "#include \"%s\"\n", incl.filename().generic_u8string().c_str());
+            fprintf(out, "#include \"%s\"\n", incl.filename().generic_string().c_str());
         }
         fprintf(out, "\n");
     }
@@ -1023,7 +1039,7 @@ void get_hackblocks_rtp(std::vector<MoleculePatchDatabase>*    globalPatches,
 
         resinfo[i].rtp = put_symtab(symtab, searchResidueDatabase(key, rtpFFDB, logger).c_str());
         auto res       = getDatabaseEntry(*resinfo[i].rtp, rtpFFDB);
-        usedPpResidues->push_back(PreprocessResidue());
+        usedPpResidues->emplace_back();
         PreprocessResidue* newentry = &usedPpResidues->back();
         copyPreprocessResidues(*res, newentry, symtab);
 

@@ -46,9 +46,14 @@
 
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/trajectory/trajectoryframe.h"
+#include "gromacs/utility/gmxassert.h"
 
 namespace gmx
 {
+
+ProcessFrameConversion::ProcessFrameConversion() = default;
+
+ProcessFrameConversion::~ProcessFrameConversion() = default;
 
 void ProcessFrameConversion::addAndCheckGuarantee(const unsigned long flag)
 {

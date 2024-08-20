@@ -43,8 +43,18 @@
 
 #include "msd.h"
 
+#include <cinttypes>
+#include <cmath>
+#include <cstdlib>
+
+#include <algorithm>
+#include <functional>
+#include <limits>
+#include <memory>
 #include <numeric>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "gromacs/analysisdata/analysisdata.h"
 #include "gromacs/analysisdata/modules/average.h"
@@ -57,12 +67,20 @@
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/options/ioptionscontainer.h"
+#include "gromacs/options/optionfiletype.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/selection/indexutil.h"
+#include "gromacs/selection/selection.h"
 #include "gromacs/selection/selectionoption.h"
 #include "gromacs/statistics/statistics.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/trajectoryanalysis/analysissettings.h"
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
 
 namespace gmx
@@ -570,13 +588,13 @@ void Msd::optionsFinished(TrajectoryAnalysisSettings gmx_unused* settings)
         std::string errorMessage =
                 "Options -type and -lateral are mutually exclusive. Choose one or neither (for 3D "
                 "MSDs).";
-        GMX_THROW(InconsistentInputError(errorMessage.c_str()));
+        GMX_THROW(InconsistentInputError(errorMessage));
     }
     if (selections_.size() > 1 && molSelected_)
     {
         std::string errorMessage =
                 "Cannot have multiple groups selected with -sel when using -mol.";
-        GMX_THROW(InconsistentInputError(errorMessage.c_str()));
+        GMX_THROW(InconsistentInputError(errorMessage));
     }
 }
 
@@ -636,22 +654,58 @@ void Msd::initAnalysis(const TrajectoryAnalysisSettings& settings, const Topolog
     }
 }
 
-void Msd::initAfterFirstFrame(const TrajectoryAnalysisSettings gmx_unused& settings, const t_trxframe& fr)
+//! Helper function to round \c frame.time to nearest integer and check that it is lossless
+static real roundedFrameTime(const t_trxframe& frame)
 {
-    t0_ = std::round(fr.time);
+    constexpr real relTolerance = 0.1;
+    const real     roundedTime  = std::round(frame.time);
+    if (std::fabs(roundedTime - frame.time) > relTolerance * std::fabs(roundedTime + frame.time))
+    {
+        GMX_THROW(gmx::ToleranceError(gmx::formatString(
+                "Frame %" PRId64
+                " has non-integral time %f. 'gmx msd' uses time discretization internally and "
+                "cannot work if the time (usually measured in ps) is not integral. You can use "
+                "'gmx convert-trj -dt 1' to subsample your trajectory before the analysis.",
+                frame.step,
+                frame.time)));
+    }
+    return roundedTime;
 }
 
+void Msd::initAfterFirstFrame(const TrajectoryAnalysisSettings gmx_unused& settings, const t_trxframe& fr)
+{
+    t0_ = roundedFrameTime(fr);
+}
 
 void Msd::analyzeFrame(int gmx_unused                frameNumber,
                        const t_trxframe&             frame,
                        t_pbc*                        pbc,
                        TrajectoryAnalysisModuleData* pdata)
 {
-    const real time = std::round(frame.time);
+    const real time = roundedFrameTime(frame);
     // Need to populate dt on frame 2;
     if (!dt_.has_value() && !times_.empty())
     {
         dt_ = time - times_[0];
+        // Place conditions so they are only checked once
+        if (*dt_ > trestart_)
+        {
+            std::string errorMessage = "-dt cannot be larger than -trestart (default 10 ps).";
+            GMX_THROW(InconsistentInputError(errorMessage));
+        }
+        if (!bRmod(trestart_, 0, *dt_))
+        {
+            std::string errorMessage =
+                    "-trestart (default 10 ps) must be divisible by -dt for useful results.";
+            GMX_THROW(InconsistentInputError(errorMessage));
+        }
+        if (*dt_ == trestart_)
+        {
+            //\n included below to avoid conflict with other output
+            fprintf(stderr,
+                    "\nWARNING: -dt and -trestart are equal. Statistics for each tau data point "
+                    "will not be independent.\n");
+        }
     }
 
     // Each frame gets an entry in times, but frameTimes only updates if we're at a restart.
@@ -674,8 +728,8 @@ void Msd::analyzeFrame(int gmx_unused                frameNumber,
         // For each preceding frame, calculate tau and do comparison.
         for (size_t i = firstValidFrame_; i < msdData.frames.size(); i++)
         {
-            // If dt > trestart, the tau increment will be dt rather than trestart.
-            const double tau = time - (t0_ + std::max<double>(trestart_, *dt_) * i);
+
+            const double tau = time - (t0_ + trestart_ * i);
             if (tau > maxTau_)
             {
                 // The (now empty) entry is no longer needed, so over time the outer vector will

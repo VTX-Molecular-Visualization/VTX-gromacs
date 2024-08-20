@@ -36,26 +36,37 @@
 #include "make_ndx.h"
 
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <string>
 #include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/oenv.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/block.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/smalloc.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 /* It's not nice to have size limits, but we should not spend more time
  * on this ancient tool, but instead use the new selection library.
@@ -715,8 +726,9 @@ static void split_group(const t_atoms* atoms, int sel_nr, std::vector<IndexGroup
 {
     char buf[STRLEN];
 
-    const char* nameToSplit = (*indexGroups)[sel_nr].name.c_str();
-    printf("Splitting group %d '%s' into %s\n", sel_nr, nameToSplit, bAtom ? "atoms" : "residues");
+    const std::string nameToSplit =
+            (*indexGroups)[sel_nr].name; // Need a copy since indexGroups can reallocate
+    printf("Splitting group %d '%s' into %s\n", sel_nr, nameToSplit.c_str(), bAtom ? "atoms" : "residues");
 
     gmx::ArrayRef<const int> groupToSplit = (*indexGroups)[sel_nr].particleIndices;
     int                      prevAtom     = -1;
@@ -728,14 +740,16 @@ static void split_group(const t_atoms* atoms, int sel_nr, std::vector<IndexGroup
         {
             if (bAtom)
             {
-                sprintf(buf, "%s_%s_%d", nameToSplit, *atoms->atomname[a], a + 1);
+                sprintf(buf, "%s_%s_%d", nameToSplit.c_str(), *atoms->atomname[a], a + 1);
             }
             else
             {
-                sprintf(buf, "%s_%s_%d", nameToSplit, name, atoms->resinfo[resind].nr);
+                sprintf(buf, "%s_%s_%d", nameToSplit.c_str(), name, atoms->resinfo[resind].nr);
             }
-            indexGroups->push_back({ buf, { a } });
+            indexGroups->push_back({ buf, {} });
         }
+        GMX_ASSERT(!indexGroups->empty(), "Should have already created an index group!");
+        indexGroups->back().particleIndices.push_back(a);
         prevAtom = a;
     }
 }

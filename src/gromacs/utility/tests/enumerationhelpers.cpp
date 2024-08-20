@@ -41,7 +41,11 @@
 
 #include "gromacs/utility/enumerationhelpers.h"
 
+#include <cstddef>
+
 #include <iostream>
+#include <iterator>
+#include <string>
 
 #include <gtest/gtest.h>
 
@@ -50,6 +54,8 @@
 #include "testutils/testasserts.h"
 
 namespace gmx
+{
+namespace test
 {
 namespace
 {
@@ -175,4 +181,5 @@ TEST(EnumerationHelpersTest, ArrayRefOfEnumerationArrayWorks)
 }
 
 } // namespace
+} // namespace test
 } // namespace gmx

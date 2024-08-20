@@ -319,7 +319,7 @@ condition breaks \ :ref:`137 <reflindahl2014accelerated>`. In the initial stage
 :math:`N` grows close to exponentially while the collected number of
 samples grows linearly, so an exit will surely occur eventually. Here we
 instead apply an exit criterion based on the observation that
-“artifically” keeping :math:`N` constant while continuing to collect
+“artificially” keeping :math:`N` constant while continuing to collect
 samples corresponds to scaling down the relative weight of old samples
 relative to new ones. Similarly, the subsequent scaling up of :math:`N`
 by a factor :math:`\gamma` corresponds to scaling up the weight of old
@@ -475,7 +475,7 @@ Furthermore, the scaling can be limited by a maximum scaling factor
 (:mdp:`awh1-target-metric-scaling-limit`). The lower limit
 of the scaling is the inverse of the maximum scaling factor.
 
-More information about this scaling can be found in :ref:`193 <reflundborg2023>`.
+More information about this scaling can be found in :ref:`194 <reflundborg2023>`.
 
 Scaling the target distribution based on the friction metric
 can be combined with Boltzmann or Local-Boltzmann target distributions.
@@ -491,7 +491,7 @@ simulation. This only makes sense if the biased coordinates
 independently from one another. A typical example of this would be when
 applying an independent bias to each monomer of a protein. Furthermore,
 multiple AWH simulations can be launched in parallel, each with a (set
-of) indepedendent biases.
+of) independent biases.
 
 If the defined sampling interval is large relative to the diffusion time
 of the reaction coordinate, traversing the sampling interval multiple
@@ -619,7 +619,7 @@ is the deviation of the force. The factors :math:`\omega(\lambda|x(t))`,
 see :eq:`Eq %s <eqawhomega>`, reweight the samples.
 :math:`\eta_{\mu\nu}(\lambda)` is a friction
 tensor :ref:`186 <reflindahl2018>` and :ref:`144 <refsivak2012thermodynamic>`.
-The diffusion matrix, on the flattened landscape, is equal to $k_B T$ times
+The diffusion matrix, on the flattened landscape, is equal to :math:`k_B T` times
 the inverse of the friction metrix tensor:
 
 .. math:: \mathbf{D}(\lambda) = k_B T \mathbf{\eta}^{-1}(\lambda).
@@ -635,6 +635,20 @@ A large value of :math:`\eta^{\frac{1}{2}}(\lambda)` indicates slow
 dynamics and long correlation times, which may require more sampling.
 
 .. _awhusage:
+
+Limitations
+~~~~~~~~~~~
+
+The only real limitation of the AWH implementation, apart from the not uncommon
+practical issue that the method might not converge sufficiently fast, is a limit
+on the maximum free energy difference. This limit is set to :math:`700 k_B T`, because
+:math:`e^700` is close to the maximum value that can be accurately represented by
+a double-precision floating-point value. For physical reaction coordinates, this
+is not a limit in practice. This does limit the range of applications for
+alchemical coordinates. For instance, hydration free-energies of divalent
+cations with a pair of monovalent anions can exceed this limit. The limit can
+also be exceeded when decoupling large molecules from solvent, but this often
+coincides with the limit where the sampling becomes problematic.
 
 Usage
 ~~~~~
@@ -686,7 +700,7 @@ maximum free energy difference of the PMF estimate. If this is much
 larger than the expected magnitude of the free energy barriers that
 should be crossed, then the system is probably being pulled too hard and
 :math:`D` should be decreased. An accurate estimate of the diffusion
-can be obtaining from an AWH simulation with the :ref:`gmx awh` tool.
+can be obtained from an AWH simulation with the :ref:`gmx awh` tool.
 :math:`\varepsilon_0` on the other hand, should be a rough estimate
 of the initial error.
 
@@ -713,13 +727,13 @@ PMF landscape. If this is not the case, the distributions of the
 reaction coordinate :math:`\xi` and the reference coordinate
 :math:`\lambda`, will differ significantly and warnings will be printed
 in the log file. One can choose :math:`k` as large as the time step
-supports. This will neccessarily increase the number of points of the
+supports. This will necessarily increase the number of points of the
 discretized sampling interval :math:`I`. In general however, it should
 not affect the performance of the simulation noticeably because the AWH
 update is implemented such that only sampled points are accessed at free
 energy update time.
 
-For an alchemical free-energy dimension, AWH accessess all
+For an alchemical free-energy dimension, AWH accesses all
 :math:`\lambda` points at every sampling step. Because the number of
 :math:`\lambda` points is usually far below 100, there is no significant
 cost to this in the AWH method itself. However, foreign energy differences

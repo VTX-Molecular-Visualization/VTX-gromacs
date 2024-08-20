@@ -113,12 +113,25 @@ struct t_simtemp
 
 struct t_lambda
 {
+    //! Return the initial lambda
+    double initialLambda(const FreeEnergyPerturbationCouplingType couplingType) const
+    {
+        if (init_lambda_without_states >= 0)
+        {
+            return init_lambda_without_states;
+        }
+        else
+        {
+            return all_lambda[couplingType][init_fep_state];
+        }
+    }
+
     //! The frequency for calculating dhdl
     int nstdhdl = 0;
     //! Fractional value of lambda (usually will use init_fep_state, this will only be for slow growth, and for legacy free energy code. Only has a valid value if positive)
-    double init_lambda = 0;
+    double init_lambda_without_states = -1;
     //! The initial number of the state
-    int init_fep_state = 0;
+    int init_fep_state = -1;
     //! Change of lambda per time step (fraction of (0.1)
     double delta_lambda = 0;
     //! Print no, total or potential energies in dhdl
@@ -175,7 +188,7 @@ struct t_expanded
     LambdaMoveCalculation elmcmove = LambdaMoveCalculation::Default;
     //! The method we use to decide of we have equilibrated the weights
     LambdaWeightWillReachEquilibrium elmceq = LambdaWeightWillReachEquilibrium::Default;
-    //! The minumum number of samples at each lambda for deciding whether we have reached a minimum
+    //! The minimum number of samples at each lambda for deciding whether we have reached a minimum
     int equil_n_at_lam = 0;
     //! Wang-Landau delta at which we stop equilibrating weights
     real equil_wl_delta = 0;
@@ -187,7 +200,7 @@ struct t_expanded
     int equil_samples = 0;
     //! Random number seed for lambda mc switches
     int lmc_seed = 0;
-    //! Whether to use minumum variance weighting
+    //! Whether to use minimum variance weighting
     bool minvar = false;
     //! The number of samples needed before kicking into minvar routine
     int minvarmin = 0;

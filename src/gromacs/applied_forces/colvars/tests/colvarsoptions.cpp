@@ -42,6 +42,7 @@
 
 #include "gromacs/applied_forces/colvars/colvarsoptions.h"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -50,14 +51,18 @@
 #include "gromacs/fileio/confio.h"
 #include "gromacs/gmxpreprocess/grompp.h"
 #include "gromacs/math/paddedvector.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/mdrunutility/mdmodulesnotifiers.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/options/options.h"
 #include "gromacs/options/treesupport.h"
 #include "gromacs/selection/indexutil.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/keyvaluetree.h"
 #include "gromacs/utility/keyvaluetreebuilder.h"
 #include "gromacs/utility/keyvaluetreemdpwriter.h"
 #include "gromacs/utility/keyvaluetreetransform.h"
@@ -71,6 +76,8 @@
 #include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
 #include "testutils/testmatchers.h"
+
+enum class PbcType : int;
 
 namespace gmx
 {
@@ -120,29 +127,25 @@ public:
 
         // Path to the sample colvars input file
         std::string colvarsConfigFile =
-                gmx::test::TestFileManager::getInputFilePath("colvars_sample.dat").u8string();
+                gmx::test::TestFileManager::getInputFilePath("colvars_sample.dat").string();
 
-        gmx::test::TestFileManager fileManager_;
-        const std::string          simData =
-                gmx::test::TestFileManager::getTestSimulationDatabaseDirectory().u8string();
+        gmx::test::TestFileManager  fileManager_;
+        const std::filesystem::path simData =
+                gmx::test::TestFileManager::getTestSimulationDatabaseDirectory();
 
         // Generate empty mdp file
         const std::string mdpInputFileName =
-                fileManager_.getTemporaryFilePath(fileName + ".mdp").u8string();
+                fileManager_.getTemporaryFilePath(fileName + ".mdp").string();
         gmx::TextWriter::writeFileFromString(mdpInputFileName, "");
 
         // Generate tpr file
-        const std::string tprName = fileManager_.getTemporaryFilePath(fileName + ".tpr").u8string();
+        const std::string tprName = fileManager_.getTemporaryFilePath(fileName + ".tpr").string();
         {
             gmx::test::CommandLine caller;
             caller.append("grompp");
             caller.addOption("-f", mdpInputFileName);
-            caller.addOption(
-                    "-p",
-                    std::filesystem::path(simData).append(fileName).replace_extension(".top").u8string());
-            caller.addOption(
-                    "-c",
-                    std::filesystem::path(simData).append(fileName).replace_extension(".gro").u8string());
+            caller.addOption("-p", (simData / fileName).replace_extension(".top").string());
+            caller.addOption("-c", (simData / fileName).replace_extension(".gro").string());
             caller.addOption("-o", tprName);
             ASSERT_EQ(0, gmx_grompp(caller.argc(), caller.argv()));
         }

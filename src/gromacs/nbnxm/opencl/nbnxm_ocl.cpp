@@ -60,6 +60,7 @@
 #include "gmxpre.h"
 
 #include <cassert>
+#include <climits>
 #include <cstdlib>
 
 #if defined(_MSVC)
@@ -86,14 +87,8 @@
 
 #include "nbnxm_ocl_types.h"
 
-namespace Nbnxm
+namespace gmx
 {
-
-/*! \brief Convenience constants */
-//@{
-static constexpr int c_clSize = c_nbnxnGpuClusterSize;
-//@}
-
 
 /*! \brief Validates the input global work size parameter.
  */
@@ -119,7 +114,7 @@ static inline void validate_global_work_size(const KernelLaunchConfig& config,
        https://www.khronos.org/registry/cl/sdk/1.0/docs/man/xhtml/clEnqueueNDRangeKernel.html
      */
     device_size_t_size_bits = dinfo->adress_bits;
-    host_size_t_size_bits   = static_cast<cl_uint>(sizeof(size_t) * 8);
+    host_size_t_size_bits   = static_cast<cl_uint>(sizeof(size_t) * CHAR_BIT);
 
     /* If sizeof(host size_t) <= sizeof(device size_t)
             => global_work_size components will always be valid
@@ -504,12 +499,12 @@ static void fillin_ocl_structures(NBParamGpu* nbp, cl_nbparam_params_t* nbparams
    misc_ops_done event to record the point in time when the above  operations
    are finished and synchronize with this event in the non-local stream.
  */
-void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const Nbnxm::InteractionLocality iloc)
+void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const InteractionLocality iloc)
 {
     NBAtomDataGpu*      adat         = nb->atdat;
     NBParamGpu*         nbp          = nb->nbparam;
-    gpu_plist*          plist        = nb->plist[iloc];
-    Nbnxm::GpuTimers*   timers       = nb->timers;
+    auto*               plist        = nb->plist[iloc].get();
+    GpuTimers*          timers       = nb->timers;
     const DeviceStream& deviceStream = *nb->deviceStreams[iloc];
 
     bool bDoTime = nb->bDoTime;
@@ -538,10 +533,10 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const Nb
            (that's the way the timing accounting can distinguish between
            separate prune kernel and combined force+prune).
          */
-        Nbnxm::gpu_launch_kernel_pruneonly(nb, iloc, 1);
+        gpu_launch_kernel_pruneonly(nb, iloc, 1);
     }
 
-    if (plist->nsci == 0)
+    if (plist->numSci == 0)
     {
         /* Don't launch an empty local kernel (is not allowed with OpenCL).
          */
@@ -560,7 +555,7 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const Nb
     config.sharedMemorySize = calc_shmem_required_nonbonded(nbp->vdwType, nb->bPrefetchLjParam);
     config.blockSize[0]     = c_clSize;
     config.blockSize[1]     = c_clSize;
-    config.gridSize[0]      = plist->nsci;
+    config.gridSize[0]      = plist->numSci;
 
     validate_global_work_size(config, 3, &nb->deviceContext_->deviceInfo());
 
@@ -574,9 +569,9 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const Nb
                 config.blockSize[2],
                 config.blockSize[0] * config.gridSize[0],
                 config.blockSize[1] * config.gridSize[1],
-                plist->nsci * c_nbnxnGpuNumClusterPerSupercluster,
+                plist->numSci * c_nbnxnGpuNumClusterPerSupercluster,
                 c_nbnxnGpuNumClusterPerSupercluster,
-                plist->na_c);
+                plist->numAtomsPerCluster);
     }
 
     fillin_ocl_structures(nbp, &nbparams_params);
@@ -679,8 +674,8 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
 {
     NBAtomDataGpu*      adat         = nb->atdat;
     NBParamGpu*         nbp          = nb->nbparam;
-    gpu_plist*          plist        = nb->plist[iloc];
-    Nbnxm::GpuTimers*   timers       = nb->timers;
+    auto*               plist        = nb->plist[iloc].get();
+    GpuTimers*          timers       = nb->timers;
     const DeviceStream& deviceStream = *nb->deviceStreams[iloc];
     bool                bDoTime      = nb->bDoTime;
 
@@ -717,7 +712,7 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
     }
 
     /* Compute the number of list entries to prune in this pass */
-    int numSciInPart = (plist->nsci - part) / numParts;
+    int numSciInPart = (plist->numSci - part) / numParts;
 
     /* Don't launch the kernel if there is no work to do. */
     if (numSciInPart <= 0)
@@ -767,9 +762,9 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
                 config.blockSize[2],
                 config.blockSize[0] * config.gridSize[0],
                 config.blockSize[1] * config.gridSize[1],
-                plist->nsci * c_nbnxnGpuNumClusterPerSupercluster,
+                plist->numSci * c_nbnxnGpuNumClusterPerSupercluster,
                 c_nbnxnGpuNumClusterPerSupercluster,
-                plist->na_c,
+                plist->numAtomsPerCluster,
                 config.sharedMemorySize);
     }
 
@@ -809,4 +804,4 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
     }
 }
 
-} // namespace Nbnxm
+} // namespace gmx

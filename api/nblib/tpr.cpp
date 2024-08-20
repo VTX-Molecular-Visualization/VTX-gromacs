@@ -43,11 +43,15 @@
 
 #include "nblib/tpr.h"
 
+#include <filesystem>
+
 #include "listed_forces/conversionscommon.h"
 
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/listed_forces/listed_forces.h"
+#include "gromacs/math/paddedvector.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/forcerec.h"
 #include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdtypes/commrec.h"
@@ -57,11 +61,19 @@
 #include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/mdtypes/state.h"
+#include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/forcefieldparameters.h"
+#include "gromacs/topology/idef.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/logger.h"
 
 #include "nblib/box.h"
+#include "nblib/exception.h"
+#include "nblib/listed_forces/bondtypes.h"
 
 namespace nblib
 {
@@ -75,7 +87,7 @@ TprReader::TprReader(std::string filename)
 
     // If the file does not exist, this function will throw
     PartialDeserializedTprFile partialDeserializedTpr =
-            read_tpx_state(filename.c_str(), &inputRecord, &globalState, &molecularTopology);
+            read_tpx_state(filename, &inputRecord, &globalState, &molecularTopology);
 
     // init forcerec
     t_forcerec          forceRecord;
@@ -110,7 +122,11 @@ TprReader::TprReader(std::string filename)
     std::unique_ptr<gmx::MDAtoms> mdAtoms =
             gmx::makeMDAtoms(nullptr, molecularTopology, inputRecord, false);
     atoms2md(molecularTopology, inputRecord, -1, {}, ntopatoms, mdAtoms.get());
-    update_mdatoms(mdAtoms->mdatoms(), inputRecord.fepvals->init_lambda);
+    const double initMassLambda =
+            (inputRecord.efep == FreeEnergyPerturbationType::No
+                     ? 0.0
+                     : inputRecord.fepvals->initialLambda(FreeEnergyPerturbationCouplingType::Mass));
+    update_mdatoms(mdAtoms->mdatoms(), initMassLambda);
     auto numParticles = mdAtoms->mdatoms()->nr;
     charges_.resize(numParticles);
     particleTypeIdOfAllParticles_.resize(numParticles);

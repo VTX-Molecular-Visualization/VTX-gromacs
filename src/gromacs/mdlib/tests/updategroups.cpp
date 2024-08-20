@@ -42,16 +42,29 @@
 
 #include "gromacs/mdlib/updategroups.h"
 
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
 #include <gtest/gtest.h>
 
+#include "gromacs/topology/block.h"
+#include "gromacs/topology/forcefieldparameters.h"
+#include "gromacs/topology/idef.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/logger.h"
+#include "gromacs/utility/real.h"
 
 #include "testutils/loggertest.h"
 #include "testutils/testasserts.h"
 
 namespace gmx
 {
-
+namespace test
+{
 namespace
 {
 
@@ -191,7 +204,7 @@ TEST_F(UpdateGroupsTest, WithEthaneUA)
 
     logHelper_.expectNoEntries(MDLogger::LogLevel::Info);
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, true, true, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, false, true, true, 1e6_real);
 }
 
 TEST_F(UpdateGroupsTest, WithMethane)
@@ -217,7 +230,7 @@ TEST_F(UpdateGroupsTest, WithMethane)
 
     logHelper_.expectNoEntries(MDLogger::LogLevel::Info);
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, true, true, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, false, true, true, 1e6_real);
 }
 
 TEST_F(UpdateGroupsTest, WithEthane)
@@ -245,7 +258,7 @@ TEST_F(UpdateGroupsTest, WithEthane)
 
     logHelper_.expectNoEntries(MDLogger::LogLevel::Info);
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, true, true, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, false, true, true, 1e6_real);
 }
 
 TEST_F(UpdateGroupsTest, CheckRadiusCalculationAtDifferentTemperaturesWithEthane)
@@ -326,7 +339,7 @@ TEST_F(UpdateGroupsTest, WithWaterThreeSite)
 
     logHelper_.expectNoEntries(MDLogger::LogLevel::Info);
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, true, true, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, false, true, true, 1e6_real);
 }
 
 // Tests update group with virtual site
@@ -355,7 +368,7 @@ TEST_F(UpdateGroupsTest, WithWaterFourSite)
 
     logHelper_.expectNoEntries(MDLogger::LogLevel::Info);
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, true, true, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, false, true, true, 1e6_real);
 }
 
 TEST_F(UpdateGroupsTest, WithFourAtomsWithSettle)
@@ -384,7 +397,7 @@ TEST_F(UpdateGroupsTest, WithFourAtomsWithSettle)
 
     logHelper_.expectNoEntries(MDLogger::LogLevel::Info);
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, true, true, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, false, true, true, 1e6_real);
 }
 
 // Tests groups with two constraints and an angle potential
@@ -413,7 +426,7 @@ TEST_F(UpdateGroupsTest, WithWaterFlexAngle)
 
     logHelper_.expectNoEntries(MDLogger::LogLevel::Info);
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, true, true, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, false, true, true, 1e6_real);
 }
 
 TEST_F(UpdateGroupsTest, CheckRadiusCalculationAtDifferentTemperaturesWithWaterFlexAngle)
@@ -476,7 +489,7 @@ TEST_F(UpdateGroupsTest, WithTwoMoltypes)
 
     logHelper_.expectNoEntries(MDLogger::LogLevel::Info);
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, true, true, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, false, true, true, 1e6_real);
 }
 
 TEST_F(UpdateGroupsTest, LogsWhenSizesAreInvalid)
@@ -497,7 +510,7 @@ TEST_F(UpdateGroupsTest, LogsWhenSizesAreInvalid)
     logHelper_.expectEntryMatchingRegex(MDLogger::LogLevel::Info,
                                         "The combination of rlist and box size prohibits");
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), 1e9_real, true, true, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), 1e9_real, false, true, true, 1e6_real);
 }
 
 TEST_F(UpdateGroupsTest, LogsWhenUpdateGroupsAreNotUseful)
@@ -524,10 +537,10 @@ TEST_F(UpdateGroupsTest, LogsWhenUpdateGroupsAreNotUseful)
     logHelper_.expectEntryMatchingRegex(MDLogger::LogLevel::Info,
                                         "No constraints or virtual sites are in use");
     UpdateGroups updateGroups = makeUpdateGroups(
-            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, true, false, 1e6_real);
+            logHelper_.logger(), std::move(updateGroupingsPerMoleculeType), maxRadius, false, true, false, 1e6_real);
 }
 
 
 } // namespace
-
+} // namespace test
 } // namespace gmx

@@ -43,6 +43,8 @@
 #ifndef GMX_MDRUNUTILITY_MDMODULESNOTIFIERS_H
 #define GMX_MDRUNUTILITY_MDMODULESNOTIFIERS_H
 
+#include <cstdint>
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -51,6 +53,8 @@
 #include "gromacs/math/matrix.h"
 #include "gromacs/math/vectypes.h"
 #include "gromacs/mdrunutility/mdmodulesnotifier.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/real.h"
 
 
 struct t_commrec;
@@ -71,6 +75,7 @@ class SeparatePmeRanksPermitted;
 struct MDModulesCheckpointReadingDataOnMain;
 struct MDModulesCheckpointReadingBroadcast;
 struct MDModulesWriteCheckpointData;
+enum class StartingBehavior;
 
 /*! \libinternal \brief Notification that atoms may have been redistributed
  *
@@ -343,6 +348,7 @@ struct MDModulesNotifiers
      *                              wrote to .tpr files
      * \tparam LocalAtomSetManager* Enables modules to add atom indices to local atom sets
      *                              to be managed
+     * \tparam StartingBehavio&     Provides modules with the starting behavior of the simulation
      * \tparam MDLogger&            Allows MdModule to use standard logging class for messages
      *                              output
      * \tparam gmx_mtop_t&          Provides the topology of the system to the modules
@@ -359,6 +365,8 @@ struct MDModulesNotifiers
      *                              that is used during the simulation
      * \tparam SimulationTimeStep&  Provides modules with the simulation time-step that allows
      *                              them to interconvert between step and time information
+     * \tparam EnsembleTemperature& Provides modules with the (eventual) constant ensemble
+     *                              temperature
      * \tparam t_commrec&           Provides a communicator to the modules during simulation
      *                              setup
      * \tparam MdRunInputFilename&  Allows modules to know .tpr filename during mdrun
@@ -366,6 +374,7 @@ struct MDModulesNotifiers
      */
     BuildMDModulesNotifier<const KeyValueTreeObject&,
                            LocalAtomSetManager*,
+                           const StartingBehavior&,
                            const MDLogger&,
                            const gmx_mtop_t&,
                            const MDModulesAtomsRedistributedSignal,
@@ -374,6 +383,7 @@ struct MDModulesNotifiers
                            SeparatePmeRanksPermitted*,
                            const PbcType&,
                            const SimulationTimeStep&,
+                           const EnsembleTemperature&,
                            const t_commrec&,
                            const MdRunInputFilename&,
                            const EdrOutputFilename&>::type simulationSetupNotifier_;

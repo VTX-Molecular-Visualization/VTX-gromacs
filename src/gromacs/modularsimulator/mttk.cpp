@@ -186,7 +186,7 @@ void MttkData::calculateIntegralIfNeeded()
 {
     // Check whether coordinate time divided by the time step is close to integer
     const bool calculationNeeded = timesClose(
-            lround(etaVelocityTime_ / couplingTimeStep_) * couplingTimeStep_, etaVelocityTime_);
+            std::lround(etaVelocityTime_ / couplingTimeStep_) * couplingTimeStep_, etaVelocityTime_);
 
     if (calculationNeeded)
     {
@@ -431,8 +431,7 @@ void MttkPropagatorConnection::connectWithPropagatorVelocityPreStepScaling(const
     {
         connectionData.setNumVelocityScalingVariables(1, ScaleVelocities::PreStepOnly);
         startVelocityScalingFactors_.emplace_back(connectionData.getViewOnStartVelocityScaling());
-        propagatorCallbacks_.emplace_back(
-                std::make_tuple(connectionData.getVelocityScalingCallback(), offset));
+        propagatorCallbacks_.emplace_back(connectionData.getVelocityScalingCallback(), offset);
     }
 }
 
@@ -447,8 +446,7 @@ void MttkPropagatorConnection::connectWithPropagatorVelocityPostStepScaling(cons
         // used for propagators doing BOTH start and end scaling
         connectionData.setNumVelocityScalingVariables(1, ScaleVelocities::PreStepOnly);
         endVelocityScalingFactors_.emplace_back(connectionData.getViewOnStartVelocityScaling());
-        propagatorCallbacks_.emplace_back(
-                std::make_tuple(connectionData.getVelocityScalingCallback(), offset));
+        propagatorCallbacks_.emplace_back(connectionData.getVelocityScalingCallback(), offset);
     }
 }
 
@@ -460,8 +458,7 @@ void MttkPropagatorConnection::connectWithPropagatorPositionPreStepScaling(const
     {
         connectionData.setNumPositionScalingVariables(1);
         startPositionScalingFactors_.emplace_back(connectionData.getViewOnPositionScaling());
-        propagatorCallbacks_.emplace_back(
-                std::make_tuple(connectionData.getPositionScalingCallback(), offset));
+        propagatorCallbacks_.emplace_back(connectionData.getPositionScalingCallback(), offset);
     }
 }
 
@@ -473,8 +470,7 @@ void MttkPropagatorConnection::connectWithPropagatorPositionPostStepScaling(cons
     {
         connectionData.setNumPositionScalingVariables(1);
         endPositionScalingFactors_.emplace_back(connectionData.getViewOnPositionScaling());
-        propagatorCallbacks_.emplace_back(
-                std::make_tuple(connectionData.getPositionScalingCallback(), offset));
+        propagatorCallbacks_.emplace_back(connectionData.getPositionScalingCallback(), offset);
     }
 }
 
@@ -536,9 +532,8 @@ void MttkElement::propagateEtaVelocity(Step step)
 
     tensor currentPressureTensor;
 
-    const real currentPressure =
-            calc_pres(pbcType_, numWalls_, statePropagatorData_->constBox(), modifiedKineticEnergy, virial, currentPressureTensor)
-            + energyData_->enerdata()->term[F_PDISPCORR];
+    const real currentPressure = calc_pres(
+            pbcType_, numWalls_, statePropagatorData_->constBox(), modifiedKineticEnergy, virial, currentPressureTensor);
 
     const real etaAcceleration = DIM * currentVolume * (mttkData_->invEtaMass() / c_presfac)
                                  * (currentPressure - mttkData_->referencePressure());

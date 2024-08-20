@@ -44,27 +44,47 @@
 
 #include "hbond.h"
 
+#include <cstdio>
+
 #include <algorithm>
+#include <array>
+#include <filesystem>
+#include <initializer_list>
 #include <iostream>
+#include <memory>
 #include <set>
+#include <string>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "gromacs/analysisdata/analysisdata.h"
 #include "gromacs/analysisdata/modules/histogram.h"
 #include "gromacs/analysisdata/modules/plot.h"
 #include "gromacs/math/units.h"
+#include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
+#include "gromacs/options/ioptionscontainer.h"
+#include "gromacs/options/optionfiletype.h"
 #include "gromacs/options/options.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/selection/nbsearch.h"
+#include "gromacs/selection/selection.h"
 #include "gromacs/selection/selectionoption.h"
+#include "gromacs/topology/idef.h"
+#include "gromacs/topology/ifunc.h"
+#include "gromacs/topology/topology.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/trajectoryanalysis/analysissettings.h"
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/pleasecite.h"
+#include "gromacs/utility/real.h"
 
 namespace gmx
 {
@@ -308,7 +328,10 @@ void Hbond::initOptions(IOptionsContainer* options, TrajectoryAnalysisSettings* 
         "[TT]-ang[tt] allows you to get a plot of the angular distribution of all hydrogen bonds "
         "at the output.[PAR]"
         "[TT]-dan[tt] allows you to get a plot of the number of analyzed donors and acceptors for "
-        "each frame at the output.[PAR]"
+        "each frame at the output.[PAR]",
+        "[PAR]",
+        "Note that this is a new implementation of the hbond utility added in",
+        "GROMACS 2024. If you need the old one, use [TT]gmx hbond-legacy[tt]."
     };
 
     options->addOption(
@@ -541,7 +564,7 @@ void Hbond::searchDonors(const TopologyInformation& top, t_info* selectionTool, 
 
 void Hbond::linkDA(t_info* selectionTool)
 {
-    if (!selectionTool->acceptors.empty() && !selectionTool->donors.empty())
+    if (!selectionTool->acceptors.empty() || !selectionTool->donors.empty())
     {
 
         auto i = selectionTool->acceptors.begin();
@@ -861,6 +884,7 @@ void Hbond::finishAnalysis(int /*nframes*/)
         averageHistogramAng.normalizeProbability();
         averageHistogramAng.done();
     }
+    please_cite(stdout, "Gorelov2024b");
 }
 
 std::vector<HBond> Hbond::prepareFrameData(const std::vector<HbondStorageFrame>& data) const
@@ -991,7 +1015,7 @@ void Hbond::writeOutput()
         for (const auto& i : dataOut)
         {
             std::vector<HBond> tempFrameData = prepareFrameData(i.hbondData_);
-            fprintf(fp, "[ hbonds_%s_frame_№%i ]", selects.c_str(), i.frameNumber_);
+            fprintf(fp, "[ hbonds_%s_frame_%i ]", selects.c_str(), i.frameNumber_);
             for (const auto& j : tempFrameData)
             {
                 if (mergeHydrogens_)
@@ -1032,7 +1056,7 @@ void Hbond::writeOutput()
 
 } // namespace
 
-const char HbondInfo::name[]             = "hbond2";
+const char HbondInfo::name[]             = "hbond";
 const char HbondInfo::shortDescription[] = "Compute and analyze hydrogen bonds.";
 
 TrajectoryAnalysisModulePointer HbondInfo::create()

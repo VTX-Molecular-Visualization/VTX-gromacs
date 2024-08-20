@@ -148,7 +148,7 @@ Run control
       the test particle. A trajectory must be provided to ``mdrun
       -rerun``. This trajectory should not contain the molecule to be
       inserted. Insertions are performed :mdp:`nsteps` times in each
-      frame at random locations and with random orientiations of the
+      frame at random locations and with random orientations of the
       molecule. When :mdp:`nstlist` is larger than one,
       :mdp:`nstlist` insertions are performed in a sphere with radius
       :mdp:`rtpi` around a the same random location using the same
@@ -246,9 +246,9 @@ Run control
 
 .. mdp:: mts-levels
 
-        (2)
-	The number of levels for the multiple time-stepping scheme.
-	Currently only 2 is supported.
+   (2)
+   The number of levels for the multiple time-stepping scheme.
+   Currently only 2 is supported.
 
 .. mdp:: mts-level2-forces
 
@@ -268,7 +268,7 @@ Run control
       Interval for computing the forces in level 2 of the multiple time-stepping
       scheme
 
-.. mdp:: mass-repartitioning-factor
+.. mdp:: mass-repartition-factor
 
       (1) []
       Scales the masses of the lightest atoms in the system by this factor
@@ -1181,9 +1181,9 @@ Pressure coupling
       but beware that you can get very large oscillations if you are
       starting from a different pressure. This requires a constant
       ensemble temperature for the system.
-      Currently it only supports isotropic scaling, and only works without
-      constraints.
-
+      It only supports isotropic scaling, and only works without constraints.
+      MTTK coupling is deprecated.
+      
 .. mdp:: pcoupltype
 
    Specifies the kind of isotropy of the pressure coupling used. Each
@@ -1444,7 +1444,7 @@ Bonds
       does not support constraints between atoms on different
       decomposition domains, so it can only be used with domain
       decomposition when so-called update-groups are used, which is
-      usally the case when only bonds involving hydrogens are
+      usually the case when only bonds involving hydrogens are
       constrained. SHAKE can not be used with energy minimization.
 
 .. mdp:: continuation
@@ -1458,7 +1458,7 @@ Bonds
    .. mdp-value:: yes
 
       do not apply constraints to the start configuration and do not
-      reset shells, useful for exact coninuation and reruns
+      reset shells, useful for exact continuation and reruns
 
 .. mdp:: shake-tol
 
@@ -2687,8 +2687,8 @@ Free energy calculations
 
    (no)
    Whether to apply the soft-core free energy interaction
-   transformation to the Columbic interaction of a molecule. Default
-   is no, as it is generally more efficient to turn off the Coulomic
+   transformation to the Coulombic interaction of a molecule. Default
+   is no, as it is generally more efficient to turn off the Coulombic
    interactions linearly before turning off the van der Waals
    interactions. Note that it is only taken into account when lambda
    states are used, not with :mdp:`couple-lambda0` /
@@ -2773,7 +2773,7 @@ Free energy calculations
 
 .. mdp:: couple-lambda1
 
-   analogous to :mdp:`couple-lambda1`, but for lambda=1
+   analogous to :mdp:`couple-lambda0`, but for lambda=1
 
 .. mdp:: couple-intramol
 
@@ -2914,13 +2914,13 @@ Expanded Ensemble calculations
    .. mdp-value:: metropolis-transition
 
       Randomly chooses a new state up or down, then uses the
-      Metropolis critera to decide whether to accept or reject:
+      Metropolis criteria to decide whether to accept or reject:
       Min{1,exp(-(beta_new u_new - beta_old u_old)}
 
    .. mdp-value:: barker-transition
 
       Randomly chooses a new state up or down, then uses the Barker
-      transition critera to decide whether to accept or reject:
+      transition criteria to decide whether to accept or reject:
       exp(-beta_new u_new)/(exp(-beta_new u_new)+exp(-beta_old u_old))
 
    .. mdp-value:: gibbs
@@ -2986,7 +2986,7 @@ Expanded Ensemble calculations
    result in free energies getting 'burned in' to incorrect values
    that depend on the initial state. when :mdp:`wl-oneovert` is true,
    then when the incrementor becomes less than 1/N, where N is the
-   mumber of samples collected (and thus proportional to the data
+   number of samples collected (and thus proportional to the data
    collection time, hence '1 over t'), then the Wang-Lambda
    incrementor is set to 1/N, decreasing every step. Once this occurs,
    :mdp:`wl-ratio` is ignored, but the weights will still stop
@@ -3154,7 +3154,7 @@ Non-equilibrium MD
    groups for constant acceleration (*e.g.* ``Protein Sol``) all atoms
    in groups Protein and Sol will experience constant acceleration as
    specified in the :mdp:`accelerate` line. Note that the kinetic energy
-   of the center of mass of accelarated groups contributes to the kinetic
+   of the center of mass of accelerated groups contributes to the kinetic
    energy and temperature of the system. If this is not desired, make
    each accelerate group also a separate temperature coupling group.
 
@@ -3232,7 +3232,7 @@ Non-equilibrium MD
       When the :mdp:`deform` option is active, add a velocity profile
       corresponding to the box deformation to the initial velocities.
       This is done after computing observables from the initial state
-      such as the initial tempature.
+      such as the initial temperature.
 
 Electric fields
 ^^^^^^^^^^^^^^^
@@ -3267,7 +3267,7 @@ Mixed quantum/classical molecular dynamics
 
 .. mdp:: QMMM-grps
 
-   groups to be descibed at the QM level for MiMiC QM/MM
+   groups to be described at the QM level for MiMiC QM/MM
 
 .. MDP:: QMMM
 
@@ -3577,7 +3577,7 @@ Collective variables (Colvars) module
 These options enable and control the features provided by the collective
 variables (Colvars) module (`link <https://colvars.github.io/>`_), a software
 library for enhanced sampling methods in molecular simulations.  The Colvars
-module is described in ref. \ :ref:`192 <refFiorin13>` as well as other
+module is described in ref. \ :ref:`195 <refFiorin13>` as well as other
 references that are reported in the log file when the corresponding features
 are used.
 For further details about Colvars interface implementation follow :ref:`colvars`.
@@ -3590,12 +3590,12 @@ For further details about Colvars interface implementation follow :ref:`colvars`
 
 .. mdp:: colvars-configfile
 
-   (colvars.dat) Name of the Colvars configuration file, using options
+   Name of the Colvars configuration file, using options
    specific to Colvars that are documented at:
    `https://colvars.github.io/gromacs-2024/colvars-refman-gromacs.html
    <https://colvars.github.io/gromacs-2024/colvars-refman-gromacs.html>`_.
    The file name can be either an absolute path, or a path relative to the
-   folder from which :ref:`gmx mdrun` is called.
+   working directory when :ref:`gmx grompp` is called.
 
 .. mdp:: colvars-seed
 

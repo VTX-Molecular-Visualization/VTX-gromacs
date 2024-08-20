@@ -48,8 +48,8 @@ target_compile_definitions(energyanalysis PRIVATE HAVE_CONFIG_H)
 target_link_libraries(energyanalysis PRIVATE common)
 
 # Public interface for modules, including dependencies and interfaces
-target_include_directories(energyanalysis PUBLIC
-                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+#target_include_directories(energyanalysis PUBLIC
+#                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(energyanalysis PUBLIC
                       fileio
                       legacy_api
@@ -67,7 +67,7 @@ target_link_libraries(energyanalysis PRIVATE legacy_modules)
 
 if(GMX_INSTALL_LEGACY_API)
     install(FILES
-	    DESTINATION include/gromacs/energyanalysis)
+            DESTINATION include/gromacs/energyanalysis)
 endif()
 
 if (BUILD_TESTING)

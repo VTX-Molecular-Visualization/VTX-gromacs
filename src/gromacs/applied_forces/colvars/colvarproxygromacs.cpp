@@ -41,7 +41,20 @@
 
 #include "colvarproxygromacs.h"
 
+#include <cstddef>
+
 #include <sstream>
+#include <vector>
+
+#include "gromacs/math/vectypes.h"
+#include "gromacs/random/seed.h"
+#include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/futil.h"
+#include "gromacs/utility/path.h"
+
+#include "colvarproxy_gromacs_version.h"
+
+enum class PbcType : int;
 
 
 namespace gmx
@@ -57,6 +70,8 @@ ColvarProxyGromacs::ColvarProxyGromacs(const std::string& colvarsConfigString,
                                        int  seed) :
     gmxAtoms_(atoms), pbcType_(pbcType), logger_(logger), doParsing_(doParsing)
 {
+    engine_name_ = "GROMACS";
+    version_int  = get_version_from_string(COLVARPROXY_VERSION);
 
     //! From colvarproxy
     //! The 5 variables below are defined in the `colvarproxy` base class
@@ -128,7 +143,8 @@ ColvarProxyGromacs::ColvarProxyGromacs(const std::string& colvarsConfigString,
         // Citation Reporter
         cvm::log(std::string("\n") + colvars->feature_report(0) + std::string("\n"));
 
-        colvars->set_initial_step(static_cast<cvm::step_number>(0L));
+        // TODO get initial step number from MDModules
+        // colvars->set_initial_step(static_cast<cvm::step_number>(0L));
     }
 }
 
@@ -155,6 +171,27 @@ void ColvarProxyGromacs::error(std::string const& message)
 {
     log(message);
     GMX_THROW(InternalError("Error in collective variables module.\n"));
+}
+
+
+int ColvarProxyGromacs::backup_file(char const* filename)
+{
+    std::string const filename_str(filename);
+    auto const        state_suffix_pos = filename_str.rfind(std::string(".colvars.state"));
+    if (state_suffix_pos != std::string::npos)
+    {
+        // For a Colvars state file, which is ordinarily written together
+        // with the GROMACS checkpoint, use the same mechanism
+        std::filesystem::path fn_orig    = filename_str;
+        std::filesystem::path fn_renamed = gmx::concatenateBeforeExtension(fn_orig, "_prev");
+        gmx_file_copy(fn_orig.string(), fn_renamed.string(), true);
+    }
+    else
+    {
+        // General backup procedure
+        make_backup(filename);
+    }
+    return COLVARS_OK;
 }
 
 

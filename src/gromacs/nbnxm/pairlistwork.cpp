@@ -44,11 +44,16 @@
 
 #include "pairlistwork.h"
 
+#include "gromacs/nbnxm/boundingbox.h"
+#include "gromacs/nbnxm/pairlist.h"
 #include "gromacs/simd/simd.h"
 
-#include "boundingboxes.h"
+#include "boundingbox_simd.h"
 
-NbnxnPairlistGpuWork::ISuperClusterData::ISuperClusterData() :
+namespace gmx
+{
+
+NbnxmPairlistGpuWork::ISuperClusterData::ISuperClusterData() :
     bb(c_gpuNumClusterPerCell),
 #if NBNXN_SEARCH_BB_SIMD4
     bbPacked(c_gpuNumClusterPerCell / c_packedBoundingBoxesDimSize * c_packedBoundingBoxesSize),
@@ -57,7 +62,9 @@ NbnxnPairlistGpuWork::ISuperClusterData::ISuperClusterData() :
     xSimd(c_gpuNumClusterPerCell * c_nbnxnGpuClusterSize * DIM)
 {
 }
-NbnxnPairlistGpuWork::NbnxnPairlistGpuWork() :
+NbnxmPairlistGpuWork::NbnxmPairlistGpuWork() :
     distanceBuffer(c_gpuNumClusterPerCell), sci_sort({}, { gmx::PinningPolicy::PinnedIfSupported })
 {
 }
+
+} // namespace gmx

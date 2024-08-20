@@ -36,30 +36,42 @@
 #include "trjcat.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/gmxfio.h"
+#include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/fileio/tngio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xtcio.h"
 #include "gromacs/fileio/xvgr.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+
+struct gmx_output_env_t;
 
 #define TIME_EXPLICIT 0
 #define TIME_CONTINUE 1
@@ -571,7 +583,7 @@ int gmx_trjcat(int argc, char* argv[])
         gmx_fatal(FARGS, "No input files!");
     }
 
-    if (bDeMux && ssize(inFiles) != nset)
+    if (bDeMux && gmx::ssize(inFiles) != nset)
     {
         gmx_fatal(FARGS, "You have specified %td files and %d entries in the demux table", inFiles.ssize(), nset);
     }
@@ -601,7 +613,7 @@ int gmx_trjcat(int argc, char* argv[])
         gmx_fatal(FARGS,
                   "Don't know what to do with more than 1 output file if  not demultiplexing");
     }
-    else if (bDeMux && ssize(outFiles) != nset && outFiles.size() != 1)
+    else if (bDeMux && gmx::ssize(outFiles) != nset && outFiles.size() != 1)
     {
         gmx_fatal(FARGS,
                   "Number of output files should be 1 or %d (#input files), not %td",

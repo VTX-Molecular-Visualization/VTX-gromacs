@@ -40,17 +40,27 @@
  */
 #include "gmxpre.h"
 
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+
 #include <algorithm>
 #include <array>
+#include <list>
+#include <memory>
 #include <string>
 
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/position.h"
+#include "gromacs/selection/selvalue.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/unique_cptr.h"
@@ -427,7 +437,7 @@ static void parse_values_varnum(const SelectionParserValueList&    values,
 
     param->flags &= ~SPAR_DYNAMIC;
     /* Compute number of values, considering also integer ranges. */
-    int valueCount = ssize(values);
+    int valueCount = gmx::ssize(values);
     if (param->val.type == INT_VALUE)
     {
         SelectionParserValueList::const_iterator value;
@@ -435,7 +445,7 @@ static void parse_values_varnum(const SelectionParserValueList&    values,
         {
             if (value->type_ == INT_VALUE && !value->hasExpressionValue())
             {
-                valueCount += abs(value->u.i.i2 - value->u.i.i1);
+                valueCount += std::abs(value->u.i.i2 - value->u.i.i1);
             }
         }
     }

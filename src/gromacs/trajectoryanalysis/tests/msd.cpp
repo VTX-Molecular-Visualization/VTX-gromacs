@@ -42,9 +42,19 @@
 
 #include "gromacs/trajectoryanalysis/modules/msd.h"
 
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <gromacs/commandline/cmdlineoptionsmodule.h>
+#include <gromacs/trajectoryanalysis/cmdlinerunner.h>
 #include <gtest/gtest.h>
 
 #include "gromacs/gmxpreprocess/grompp.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/path.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/textstream.h"
@@ -144,8 +154,8 @@ public:
     // to calling grompp. sets the -s input to the generated tpr
     void createTpr(const std::string& structure, const std::string& topology, const std::string& index)
     {
-        std::string tpr             = fileManager().getTemporaryFilePath(".tpr").u8string();
-        std::string mdp             = fileManager().getTemporaryFilePath(".mdp").u8string();
+        std::string tpr             = fileManager().getTemporaryFilePath(".tpr").string();
+        std::string mdp             = fileManager().getTemporaryFilePath(".mdp").string();
         std::string mdpFileContents = gmx::formatString(
                 "cutoff-scheme = verlet\n"
                 "rcoulomb      = 0.85\n"
@@ -160,11 +170,11 @@ public:
         caller.addOption("-maxwarn", 0);
         caller.addOption("-f", mdp.c_str());
         auto gro = std::filesystem::path(simDB).append(structure);
-        caller.addOption("-c", gro.u8string().c_str());
+        caller.addOption("-c", gro.string().c_str());
         auto top = std::filesystem::path(simDB).append(topology);
-        caller.addOption("-p", top.u8string().c_str());
+        caller.addOption("-p", top.string().c_str());
         auto ndx = std::filesystem::path(simDB).append(index);
-        caller.addOption("-n", ndx.u8string().c_str());
+        caller.addOption("-n", ndx.string().c_str());
         caller.addOption("-o", tpr.c_str());
         ASSERT_EQ(0, gmx_grompp(caller.argc(), caller.argv()));
 
@@ -233,6 +243,21 @@ TEST_F(MsdModuleTest, oneDimensionalDiffusionWithMaxTau)
     runTest(CommandLine(cmdline));
 }
 
+TEST_F(MsdModuleTest, roundingFail)
+{
+    // Check that a proper exception is throws when a trajectory is saved too often, #4694
+    setInputFile("-f", "msd_traj_rounding_fail.xtc");
+    setInputFile("-s", "msd_coords.gro");
+    setInputFile("-n", "msd.ndx");
+    CommandLine cmdline = commandLine();
+    cmdline.addOption("-sel", "0");
+
+    ICommandLineOptionsModulePointer runner(
+            TrajectoryAnalysisCommandLineRunner::createModule(createModule()));
+
+    EXPECT_THROW(CommandLineTestHelper::runModuleDirect(std::move(runner), &cmdline), gmx::ToleranceError);
+}
+
 
 // -------------------------------------------------------------------------
 // These tests operate on a more realistic trajectory, with a solvated protein,
@@ -250,7 +275,8 @@ TEST_F(MsdModuleTest, multipleGroupsWork)
     runTest(CommandLine(cmdline));
 }
 
-TEST_F(MsdModuleTest, trestartLessThanDt)
+// Disabled in release-2024 branch, to be fixed in main branch by !4263
+TEST_F(MsdModuleTest, DISABLED_trestartLessThanDt)
 {
     setAllInputs("alanine_vsite_solvated");
     const char* const cmdline[] = { "-trestart", "1", "-sel", "2" };

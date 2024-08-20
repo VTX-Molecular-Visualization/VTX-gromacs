@@ -42,10 +42,13 @@
 
 #include "swapcoords.h"
 
+#include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -70,16 +73,27 @@
 #include "gromacs/mdtypes/swaphistory.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/timing/wallcycle.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/mtop_lookup.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/pleasecite.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/snprintf.h"
 #include "gromacs/utility/stringutil.h"
+
+namespace gmx
+{
+class ForceProviders;
+class IMDOutputProvider;
+class IMdpOptionProvider;
+struct MDModulesNotifiers;
+} // namespace gmx
 
 static const std::string SwS      = { "SWAP:" }; /**< For output that comes from the swap module */
 static const std::string SwSEmpty = { "     " }; /**< Placeholder for multi-line output */
@@ -435,7 +449,7 @@ static gmx_bool compartment_contains_atom(real w1, real w2, real x, real l, real
         x += l;
     }
 
-    *distance_from_b = static_cast<real>(fabs(x - bulkOffset * 0.5 * width));
+    *distance_from_b = std::fabs(x - bulkOffset * 0.5_real * width);
 
     /* Return TRUE if we now are in area "????" */
     return (x >= w1) && (x < w2);

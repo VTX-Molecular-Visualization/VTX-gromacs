@@ -46,12 +46,16 @@
 #include "gmxpre.h"
 
 #include "gromacs/gpu_utils/cuda_arch_utils.cuh"
-#include "gromacs/gpu_utils/typecasts.cuh"
+#include "gromacs/gpu_utils/typecasts_cuda_hip.h"
 #include "gromacs/math/utilities.h"
+#include "gromacs/nbnxm/gpu_types_common.h"
 #include "gromacs/pbcutil/ishift.h"
 
 #include "nbnxm_cuda_kernel_utils.cuh"
 #include "nbnxm_cuda_types.h"
+
+namespace gmx
+{
 
 /* Note that floating-point constants in CUDA code should be suffixed
  * with f (e.g. 0.5f), to stop the compiler producing intermediate
@@ -103,16 +107,16 @@
  */
 template<bool haveFreshList>
 __launch_bounds__(THREADS_PER_BLOCK, MIN_BLOCKS_PER_MP) __global__
-        void nbnxn_kernel_prune_cuda(NBAtomDataGpu atdat, NBParamGpu nbparam, Nbnxm::gpu_plist plist, int numParts)
+        void nbnxn_kernel_prune_cuda(NBAtomDataGpu atdat, NBParamGpu nbparam, GpuPairlist plist, int numParts)
 #ifdef FUNCTION_DECLARATION_ONLY
                 ; /* Only do function declaration, omit the function body. */
 
 // Add extern declarations so each translation unit understands that
 // there will be a definition provided.
 extern template __global__ void
-nbnxn_kernel_prune_cuda<true>(const NBAtomDataGpu, const NBParamGpu, const Nbnxm::gpu_plist, int);
+nbnxn_kernel_prune_cuda<true>(const NBAtomDataGpu, const NBParamGpu, const GpuPairlist, int);
 extern template __global__ void
-nbnxn_kernel_prune_cuda<false>(const NBAtomDataGpu, const NBParamGpu, const Nbnxm::gpu_plist, int);
+nbnxn_kernel_prune_cuda<false>(const NBAtomDataGpu, const NBParamGpu, const GpuPairlist, int);
 #else
 {
 
@@ -128,7 +132,7 @@ nbnxn_kernel_prune_cuda<false>(const NBAtomDataGpu, const NBParamGpu, const Nbnx
 
     // Kernel has been launched with max number of blocks across all passes (plist.nsci/numParts),
     // but the last pass will require 1 less block, so extra block should return early.
-    size_t numSciInPart = (plist.nsci - part) / numParts;
+    size_t numSciInPart = (plist.numSci - part) / numParts;
     if (blockIdx.x >= numSciInPart)
     {
         return;
@@ -348,3 +352,5 @@ nbnxn_kernel_prune_cuda<false>(const NBAtomDataGpu, const NBParamGpu, const Nbnx
 #undef NTHREAD_Z
 #undef MIN_BLOCKS_PER_MP
 #undef THREADS_PER_BLOCK
+
+} // namespace gmx

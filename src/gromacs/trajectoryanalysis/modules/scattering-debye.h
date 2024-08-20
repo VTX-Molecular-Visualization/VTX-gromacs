@@ -42,11 +42,14 @@
 #ifndef GMX_TRAJECTORYANALYSIS_SCATTERING_DEBYE_H
 #define GMX_TRAJECTORYANALYSIS_SCATTERING_DEBYE_H
 
+#include <cstddef>
+
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/selection/selection.h"
 #include "gromacs/topology/topology.h"
@@ -72,10 +75,11 @@ struct PairDistValue
 
 /*! \internal \brief
  * Base class for computing SANS and SAXS using Debye Method
- * It computes it via Debye formula for scattering:
+ *
+ * \c ComputeDebyeScattering uses Debye formula for scattering:
  * \f[I(s) = \sum_{i} \sum_{j} f_i(s) * f_j(s) * \frac{sin(s*r_{ij})}{s*r_{ij}}\f]
  * where \f[ r_{ij} = \left| \vec{r_i} - \vec{r_j} \right| \f] between atoms i and j
- * and \f[f_i(s)\f], \f[f_j(s)\f] are atomic structure factors for atoms i and j
+ * and \f[f_i(s)\f], \f[f_j(s)\f] are atomic structure factors for atoms i and j.
  */
 class ComputeDebyeScattering
 {

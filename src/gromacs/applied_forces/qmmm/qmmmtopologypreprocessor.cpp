@@ -42,7 +42,15 @@
 
 #include "qmmmtopologypreprocessor.h"
 
+#include <cstddef>
+
+#include <filesystem>
+
+#include "gromacs/applied_forces/qmmm/qmmmtypes.h"
 #include "gromacs/selection/indexutil.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/idef.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_atomloops.h"
 #include "gromacs/topology/mtop_lookup.h"
 #include "gromacs/topology/mtop_util.h"
@@ -274,18 +282,18 @@ void QMMMTopologyPreprocessor::buildQMMMAtomNumbers(gmx_mtop_t* mtop)
 {
     // Save to atomNumbers_ atom numbers of all atoms
     AtomIterator atoms(*mtop);
-    while ((*atoms).globalAtomNumber() < mtop->natoms)
+    while (atoms->globalAtomNumber() < mtop->natoms)
     {
         // Check if we have valid atomnumbers
-        if ((*atoms).atom().atomnumber < 0)
+        if (atoms->atom().atomnumber < 0)
         {
             gmx_fatal(FARGS,
                       "Atoms %d does not have atomic number needed for QMMM. Check atomtypes "
                       "section in your topology or forcefield.",
-                      (*atoms).globalAtomNumber());
+                      atoms->globalAtomNumber());
         }
 
-        atomNumbers_.push_back((*atoms).atom().atomnumber);
+        atomNumbers_.push_back(atoms->atom().atomnumber);
         atoms++;
     }
 

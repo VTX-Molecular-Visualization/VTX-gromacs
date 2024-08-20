@@ -42,7 +42,11 @@
 
 #include "gromacs/math/neldermead.h"
 
+#include <cmath>
+
 #include <algorithm>
+#include <functional>
+#include <iterator>
 #include <list>
 #include <numeric>
 #include <vector>
@@ -50,6 +54,7 @@
 #include "gromacs/math/utilities.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 
 namespace gmx
 {
@@ -226,12 +231,12 @@ real NelderMeadSimplex::orientedLength() const
                 });
         result = std::max(result, thisLength);
     }
-    return sqrt(result);
+    return std::sqrt(result);
 }
 
 void NelderMeadSimplex::updateCentroidAndReflectionPoint()
 {
-    // intialize with first vertex, then add up all other vertex coordinates
+    // initialize with first vertex, then add up all other vertex coordinates
     // expect last one
     centroidWithoutWorstPoint_ =
             std::accumulate(std::next(std::begin(simplex_)),

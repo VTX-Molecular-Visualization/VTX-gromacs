@@ -43,25 +43,44 @@
  */
 #include "gmxpre.h"
 
+#include "config.h"
+
+#include <cstdlib>
+
+#include <algorithm>
+#include <filesystem>
+#include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include <gtest/gtest-spi.h>
+#include <gtest/gtest.h>
 
 #include "gromacs/ewald/pme.h"
+#include "gromacs/hardware/device_management.h"
 #include "gromacs/hardware/hw_info.h"
 #include "gromacs/trajectory/energyframe.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basenetwork.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/message_string_collector.h"
 #include "gromacs/utility/mpiinfo.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
 
+#include "testutils/cmdlinetest.h"
 #include "testutils/mpitest.h"
 #include "testutils/refdata.h"
+#include "testutils/testasserts.h"
+#include "testutils/testfilemanager.h"
 
 #include "energyreader.h"
 #include "moduletest.h"
@@ -217,7 +236,7 @@ void PmeTest::SetUpTestSuite()
 
         std::string tprFileNameSuffix = formatString("%s.tpr", enumValueToString(pmeTestFlavor));
         std::replace(tprFileNameSuffix.begin(), tprFileNameSuffix.end(), ' ', '_');
-        runner.tprFileName_ = s_testFileManager->getTemporaryFilePath(tprFileNameSuffix).u8string();
+        runner.tprFileName_ = s_testFileManager->getTemporaryFilePath(tprFileNameSuffix).string();
         // Note that only one rank actually generates a tpr file
         runner.callGrompp();
         s_tprFileNames[pmeTestFlavor] = runner.tprFileName_;
@@ -289,7 +308,8 @@ MessageStringCollector PmeTest::getSkipMessagesIfNecessary(const CommandLine& co
         static constexpr bool sc_gpuBuildSyclWithoutGpuFft =
                 // NOLINTNEXTLINE(misc-redundant-expression)
                 (GMX_GPU_SYCL != 0) && (GMX_GPU_FFT_MKL == 0) && (GMX_GPU_FFT_ROCFFT == 0)
-                && (GMX_GPU_FFT_VKFFT == 0) && (GMX_GPU_FFT_BBFFT == 0); // NOLINT(misc-redundant-expression)
+                && (GMX_GPU_FFT_VKFFT == 0) && (GMX_GPU_FFT_BBFFT == 0)
+                && (GMX_GPU_FFT_ONEMKL == 0); // NOLINT(misc-redundant-expression)
         messages.appendIf(commandLineTargetsPmeFftOnGpu && sc_gpuBuildSyclWithoutGpuFft,
                           "it targets GPU execution of FFT work, which is not supported in the "
                           "current build");

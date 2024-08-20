@@ -43,14 +43,18 @@
 #include "simulatorbuilder.h"
 
 #include <memory>
+#include <utility>
 
+#include "gromacs/mdlib/stophandler.h"
 #include "gromacs/mdlib/vsite.h"
+#include "gromacs/mdrun/isimulator.h"
 #include "gromacs/mdrunutility/mdmodulesnotifiers.h"
 #include "gromacs/mdtypes/checkpointdata.h"
 #include "gromacs/mdtypes/mdrunoptions.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/modularsimulator/modularsimulator.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/exceptions.h"
 
 #include "legacysimulator.h"
 #include "membedholder.h"
@@ -60,11 +64,15 @@
 namespace gmx
 {
 
+SimulatorBuilder::SimulatorBuilder() = default;
+
+SimulatorBuilder::~SimulatorBuilder() = default;
+
 //! \brief Build a Simulator object
 std::unique_ptr<ISimulator> SimulatorBuilder::build(bool useModularSimulator)
 {
     // TODO: Reduce protocol complexity.
-    //     Investigate individual paramters. Identify default-constructable parameters and clarify
+    //     Investigate individual parameters. Identify default-constructable parameters and clarify
     //     usage requirements.
     if (!stopHandlerBuilder_)
     {
@@ -209,6 +217,11 @@ std::unique_ptr<ISimulator> SimulatorBuilder::build(bool useModularSimulator)
 void SimulatorBuilder::add(MembedHolder&& membedHolder)
 {
     membedHolder_ = std::make_unique<MembedHolder>(std::move(membedHolder));
+}
+
+void SimulatorBuilder::add(std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder)
+{
+    stopHandlerBuilder_ = std::move(stopHandlerBuilder);
 }
 
 void SimulatorBuilder::add(ReplicaExchangeParameters&& replicaExchangeParameters)

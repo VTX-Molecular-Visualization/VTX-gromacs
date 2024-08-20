@@ -56,7 +56,7 @@
 #include "gromacs/gpu_utils/devicebuffer.h"
 #include "gromacs/gpu_utils/gpu_utils.h"
 #include "gromacs/gpu_utils/gpueventsynchronizer.h"
-#include "gromacs/gpu_utils/typecasts.cuh"
+#include "gromacs/gpu_utils/typecasts_cuda_hip.h"
 #include "gromacs/gpu_utils/vectype_ops.cuh"
 #include "gromacs/hardware/device_information.h"
 #include "gromacs/mdtypes/simulation_workload.h"
@@ -66,6 +66,7 @@
 #include "gromacs/nbnxm/gpu_data_mgmt.h"
 #include "gromacs/nbnxm/grid.h"
 #include "gromacs/nbnxm/nbnxm.h"
+#include "gromacs/nbnxm/nbnxm_gpu_data_mgmt.h"
 #include "gromacs/nbnxm/pairlist.h"
 #include "gromacs/timing/gpu_timing.h"
 #include "gromacs/utility/cstringutil.h"
@@ -117,11 +118,11 @@
 
 #include "nbnxm_cuda_kernel_sci_sort.cuh"
 
-namespace Nbnxm
+namespace gmx
 {
 
 /*! Nonbonded kernel function pointer type */
-typedef void (*nbnxn_cu_kfunc_ptr_t)(const NBAtomDataGpu, const NBParamGpu, const gpu_plist, bool);
+typedef void (*nbnxn_cu_kfunc_ptr_t)(const NBAtomDataGpu, const NBParamGpu, const GpuPairlist, bool);
 
 /*********************************/
 
@@ -431,23 +432,15 @@ static inline int calc_shmem_required_nonbonded(const int               num_thre
  * Take counts prepared in combined prune and interaction kernel and use them to sort plist.
  * Note that this sorted list is not available in the combined prune and interaction kernel
  * itself, which causes a performance degredation of 1-10% for that initial call */
-static inline void gpuLaunchKernelSciSort(gpu_plist* plist, const DeviceStream& deviceStream)
+static inline void gpuLaunchKernelSciSort(GpuPairlist* plist, const DeviceStream& deviceStream)
 {
-    size_t scanTemporarySize = static_cast<size_t>(plist->sorting.nscanTemporary);
-
-    cub::DeviceScan::ExclusiveSum(plist->sorting.scanTemporary,
-                                  scanTemporarySize,
-                                  plist->sorting.sciHistogram,
-                                  plist->sorting.sciOffset,
-                                  c_sciHistogramSize,
-                                  deviceStream.stream());
+    performExclusiveScan(plist->sorting.nscanTemporary, plist->sorting.scanTemporary, plist, deviceStream);
 
     KernelLaunchConfig configSortSci;
-    configSortSci.blockSize[0] = c_sciSortingThreadsPerBlock;
-    configSortSci.blockSize[1] = 1;
-    configSortSci.blockSize[2] = 1;
-    configSortSci.gridSize[0] =
-            (plist->nsci + c_sciSortingThreadsPerBlock - 1) / c_sciSortingThreadsPerBlock;
+    configSortSci.blockSize[0]     = c_sciSortingThreadsPerBlock;
+    configSortSci.blockSize[1]     = 1;
+    configSortSci.blockSize[2]     = 1;
+    configSortSci.gridSize[0]      = gmx::divideRoundUp(plist->numSci, c_sciSortingThreadsPerBlock);
     configSortSci.sharedMemorySize = 0;
 
     const auto kernelSciSort = nbnxnKernelBucketSciSort;
@@ -479,8 +472,8 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const In
 {
     NBAtomDataGpu*      adat         = nb->atdat;
     NBParamGpu*         nbp          = nb->nbparam;
-    gpu_plist*          plist        = nb->plist[iloc];
-    Nbnxm::GpuTimers*   timers       = nb->timers;
+    auto*               plist        = nb->plist[iloc].get();
+    GpuTimers*          timers       = nb->timers;
     const DeviceStream& deviceStream = *nb->deviceStreams[iloc];
 
     bool bDoTime = nb->bDoTime;
@@ -510,7 +503,7 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const In
         gpu_launch_kernel_pruneonly(nb, iloc, 1);
     }
 
-    if (plist->nsci == 0)
+    if (plist->numSci == 0)
     {
         /* Don't launch an empty local kernel (not allowed with CUDA) */
         return;
@@ -532,7 +525,7 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const In
     {
         num_threads_z = 2;
     }
-    int nblock = calc_nb_kernel_nblock(plist->nsci, &nb->deviceContext_->deviceInfo());
+    int nblock = calc_nb_kernel_nblock(plist->numSci, &nb->deviceContext_->deviceInfo());
 
 
     KernelLaunchConfig config;
@@ -554,9 +547,9 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const In
                 config.blockSize[2],
                 config.gridSize[0],
                 config.gridSize[1],
-                plist->nsci * c_nbnxnGpuNumClusterPerSupercluster,
+                plist->numSci * c_nbnxnGpuNumClusterPerSupercluster,
                 c_nbnxnGpuNumClusterPerSupercluster,
-                plist->na_c,
+                plist->numAtomsPerCluster,
                 config.sharedMemorySize);
     }
 
@@ -607,8 +600,8 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
 {
     NBAtomDataGpu*      adat         = nb->atdat;
     NBParamGpu*         nbp          = nb->nbparam;
-    gpu_plist*          plist        = nb->plist[iloc];
-    Nbnxm::GpuTimers*   timers       = nb->timers;
+    auto*               plist        = nb->plist[iloc].get();
+    GpuTimers*          timers       = nb->timers;
     const DeviceStream& deviceStream = *nb->deviceStreams[iloc];
 
     bool bDoTime = nb->bDoTime;
@@ -638,7 +631,7 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
      * Also note that this CUDA implementation (parts tracking on device) differs from the
      * other backends (parts tracking on host, passed as kernel argument).
      */
-    int numSciInPartMax = (plist->nsci) / numParts;
+    int numSciInPartMax = (plist->numSci) / numParts;
 
     /* Don't launch the kernel if there is no work to do (not allowed with CUDA) */
     if (numSciInPartMax <= 0)
@@ -689,7 +682,7 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
                 config.gridSize[1],
                 numSciInPartMax * c_nbnxnGpuNumClusterPerSupercluster,
                 c_nbnxnGpuNumClusterPerSupercluster,
-                plist->na_c,
+                plist->numAtomsPerCluster,
                 config.sharedMemorySize);
     }
 
@@ -749,4 +742,4 @@ void cuda_set_cacheconfig()
     }
 }
 
-} // namespace Nbnxm
+} // namespace gmx

@@ -49,23 +49,33 @@
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/pulling/pull.h"
+#include "gromacs/random/seed.h"
 #include "gromacs/random/tabulatednormaldistribution.h"
 #include "gromacs/random/threefry.h"
 #include "gromacs/random/uniformintdistribution.h"
 #include "gromacs/random/uniformrealdistribution.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
@@ -73,7 +83,11 @@
 #include "gromacs/utility/gmxomp.h"
 #include "gromacs/utility/path.h"
 #include "gromacs/utility/pleasecite.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/stringutil.h"
+
+struct gmx_output_env_t;
 
 //! longest file names allowed in input files
 #define WHAM_MAXFILELEN 2048
@@ -1007,7 +1021,7 @@ static void calc_cumulatives(t_UmbrellaWindow*  window,
             }
             fprintf(fp, "\n");
         }
-        printf("Wrote cumulative distribution functions to %s\n", fn.u8string().c_str());
+        printf("Wrote cumulative distribution functions to %s\n", fn.string().c_str());
         xvgrclose(fp);
     }
 }
@@ -1081,7 +1095,7 @@ static void create_synthetic_histo(t_UmbrellaWindow*  synthWindow,
                 "autocorrelation times (ACTs) are required. Otherwise the statistical error\n"
                 "cannot be predicted. You have 3 options:\n"
                 "1) Make gmx wham estimate the ACTs (options -ac and -acsig).\n"
-                "2) Calculate the ACTs by yourself (e.g. with g_analyze) and provide them\n");
+                "2) Calculate the ACTs by yourself (e.g. with gmx analyze) and provide them\n");
         std::strcat(errstr,
                     "   with option -iiact for all umbrella windows.\n"
                     "3) If all ACTs are identical and know, you can define them with -bs-tau.\n"
@@ -1232,7 +1246,7 @@ static void print_histograms(const char*        fnhist,
     }
 
     xvgrclose(fp);
-    printf("Wrote %s\n", fn.u8string().c_str());
+    printf("Wrote %s\n", fn.string().c_str());
 }
 
 //! Make random weights for histograms for the Bayesian bootstrap of complete histograms)

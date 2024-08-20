@@ -41,15 +41,29 @@
  */
 #include "gmxpre.h"
 
+#include "config.h"
+
+#include <cstdlib>
+
 #include <algorithm>
+#include <array>
+#include <filesystem>
+#include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "gromacs/hardware/device_management.h"
 #include "gromacs/hardware/hw_info.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/message_string_collector.h"
 #include "gromacs/utility/stringutil.h"
 
@@ -161,6 +175,7 @@ std::optional<std::string> reasonsTestIsInvalid(MdpFlavor       mdpFlavor,
     errorReasons.appendIf(updateFlavor == UpdateFlavor::Gpu && pmeFlavor == PmeFlavor::Cpu
                                   && separatePmeRankFlavor != SeparatePmeRankFlavor::None,
                           "Can not use GPU update and CPU PME on a separate rank");
+    errorReasons.appendIf(GMX_GPU_HIP, "HIP kernels are not implemented yet");
 #endif
     errorReasons.appendIf(haveAnyGpuWork && nonbondedFlavor == NonbondedFlavor::Cpu,
                           "Cannot offload PME or Update to GPU without offloading Nonbondeds");
@@ -340,7 +355,7 @@ void DomDecSpecialCasesTest::SetUpTestSuite()
                                                           enumValueToString(std::get<0>(mdpFlavor)),
                                                           enumValueToString(std::get<1>(mdpFlavor)));
         std::replace(tprFileNameSuffix.begin(), tprFileNameSuffix.end(), ' ', '_');
-        runner.tprFileName_ = s_testFileManager->getTemporaryFilePath(tprFileNameSuffix).u8string();
+        runner.tprFileName_ = s_testFileManager->getTemporaryFilePath(tprFileNameSuffix).string();
         // Note that only one rank actually generates a tpr file
         ASSERT_EQ(0, runner.callGrompp());
         s_tprFileNames[mdpFlavor] = runner.tprFileName_;

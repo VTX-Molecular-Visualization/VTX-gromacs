@@ -54,8 +54,8 @@
 #include <utility>
 #include <vector>
 
-#if __has_include(<boost/stl_interfaces/iterator_interface.hpp>)
-#    include <boost/stl_interfaces/iterator_interface.hpp>
+#if __has_include("external/boost/stl_interfaces/iterator_interface.hpp")
+#    include "external/boost/stl_interfaces/iterator_interface.hpp"
 #else // fallback for installed headers
 #    include <gromacs/external/boost/stl_interfaces/iterator_interface.hpp>
 #endif
@@ -65,7 +65,7 @@ namespace gmx
 
 template<class T>
 struct ArrayRefIter :
-    boost::stl_interfaces::iterator_interface<ArrayRefIter<T>, std::random_access_iterator_tag, T>
+    gmx::boost::stl_interfaces::iterator_interface<ArrayRefIter<T>, std::random_access_iterator_tag, T>
 {
     // This default constructor does not initialize it_
     constexpr ArrayRefIter() noexcept {}
@@ -284,7 +284,7 @@ public:
      * The actual memory areas are not modified, only the references are
      * swapped.
      */
-    void swap(ArrayRef<T>& other)
+    void swap(ArrayRef<T>& other) noexcept
     {
         std::swap(begin_, other.begin_);
         std::swap(end_, other.end_);
@@ -352,7 +352,7 @@ ArrayRef<const typename T::value_type> makeConstArrayRef(const T& c)
  * \ingroup module_utility
  */
 template<typename T>
-void swap(ArrayRef<T>& a, ArrayRef<T>& b)
+void swap(ArrayRef<T>& a, ArrayRef<T>& b) noexcept
 {
     a.swap(b);
 }

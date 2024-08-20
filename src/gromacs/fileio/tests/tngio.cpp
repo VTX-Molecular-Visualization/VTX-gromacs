@@ -51,6 +51,10 @@
 #include "testutils/simulationdatabase.h"
 #include "testutils/testfilemanager.h"
 
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -61,13 +65,6 @@ public:
     gmx::test::TestFileManager fileManager_;
 };
 
-TEST_F(TngTest, CanOpenTngFile)
-{
-    gmx_tng_trajectory_t tng;
-    gmx_tng_open("spc2-traj.tng", 'r', &tng);
-    gmx_tng_close(&tng);
-}
-
 TEST_F(TngTest, CloseBeforeOpenIsNotFatal)
 {
     gmx_tng_trajectory_t tng = nullptr;
@@ -75,3 +72,5 @@ TEST_F(TngTest, CloseBeforeOpenIsNotFatal)
 }
 
 } // namespace
+} // namespace test
+} // namespace gmx

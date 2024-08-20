@@ -92,7 +92,7 @@ parser.add_argument(
     "--cmake",
     nargs="*",
     type=str,
-    default=["3.18.4", "3.21.2", "3.24.0"],
+    default=["3.28.0", "3.29.3"],
     help="Selection of CMake version to provide to base image. (default: %(default)s)",
 )
 
@@ -179,11 +179,11 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--hipsycl",
+    "--adaptivecpp",
     type=str,
     nargs="?",
     default=None,
-    help="Select hipSYCL repository tag/commit/branch.",
+    help="Select AdaptiveCpp repository tag/commit/branch.",
 )
 
 parser.add_argument(
@@ -297,15 +297,14 @@ def image_name(configuration: argparse.Namespace) -> str:
             )
             elements.append(compiler + "-" + version)
             break
-    for gpusdk in ("cuda", "hipsycl"):
+    for gpusdk in ("cuda", "adaptivecpp"):
         version = getattr(configuration, gpusdk, None)
         if version is not None:
             elements.append(gpusdk + "-" + version)
     if configuration.intel_compute_runtime:
         elements.append("intel-compute-runtime")
     if configuration.rocm is not None:
-        if configuration.rocm != "3.5.1":
-            elements.append("rocm-" + configuration.rocm)
+        elements.append("rocm-" + configuration.rocm)
     if configuration.cp2k is not None:
         elements.append("cp2k-" + configuration.cp2k)
 

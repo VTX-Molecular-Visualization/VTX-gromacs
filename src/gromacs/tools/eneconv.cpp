@@ -36,13 +36,20 @@
 #include "eneconv.h"
 
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
+#include <string>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/enxio.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/listed_forces/disre.h"
 #include "gromacs/math/functions.h"
@@ -51,11 +58,15 @@
 #include "gromacs/trajectory/energyframe.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/int64_to_int.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strconvert.h"
+
+struct gmx_output_env_t;
 
 #define TIME_EXPLICIT 0
 #define TIME_CONTINUE 1
@@ -745,8 +756,8 @@ int gmx_eneconv(int argc, char* argv[])
                                                "want.\n"
                                                "         Use the -rmdh option to throw all delta H "
                                                "samples away.\n"
-                                               "         Use g_energy -odh option to extract these "
-                                               "samples.\n",
+                                               "         Use gmx energy -odh option to extract "
+                                               "these samples.\n",
                                                files[f].c_str(),
                                                size);
                                         warned_about_dh = TRUE;

@@ -39,24 +39,37 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#include <filesystem>
+#include <string>
+
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/eigio.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 typedef struct
 {
@@ -298,14 +311,14 @@ static int sscan_list(int* list[], const char* str, const char* listname)
                 }
                 break;
 
-            /* format error occured */
+            /* format error occurred */
             case sError:
                 gmx_fatal(FARGS,
                           "Error in the list of eigenvectors for %s at pos %td with char %c",
                           listname,
                           pos - startpos,
                           *(pos - 1));
-            /* logical error occured */
+            /* logical error occurred */
             case sZero:
                 gmx_fatal(FARGS,
                           "Error in the list of eigenvectors for %s at pos %td: eigenvector 0 is "
@@ -1029,15 +1042,16 @@ int gmx_make_edi(int argc, char* argv[])
     {
         if (bFit1)
         {
-            /* if g_covar used different coordinate groups to fit and to do the PCA */
+            /* if gmx covar used different coordinate groups to fit and to do the PCA */
             printf("\nNote: the structure in %s should be the same\n"
-                   "      as the one used for the fit in g_covar\n",
+                   "      as the one used for the fit in gmx covar\n",
                    ftp2fn(efTPS, NFILE, fnm));
-            printf("\nSelect the index group that was used for the least squares fit in g_covar\n");
+            printf("\nSelect the index group that was used for the least squares fit in gmx "
+                   "covar\n");
         }
         else
         {
-            printf("\nNote: Apparently no fitting was done in g_covar.\n"
+            printf("\nNote: Apparently no fitting was done in gmx covar.\n"
                    "      However, you need to select a reference group for fitting in mdrun\n");
         }
         get_index(atoms, indexfile, 1, &nfit, &ifit, &grpname);

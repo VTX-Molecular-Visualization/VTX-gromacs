@@ -45,26 +45,41 @@
 
 #include "grid.h"
 
+#include <climits>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <array>
+#include <filesystem>
+#include <string>
 
+#include "gromacs/math/functions.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/math/vec.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdlib/updategroupscog.h"
 #include "gromacs/mdtypes/atominfo.h"
 #include "gromacs/nbnxm/atomdata.h"
+#include "gromacs/nbnxm/pairlist.h"
 #include "gromacs/simd/simd.h"
 #include "gromacs/simd/vector_operations.h"
+#include "gromacs/utility/allocator.h"
+#include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 
-#include "boundingboxes.h"
+#include "boundingbox.h"
+#include "boundingbox_simd.h"
 #include "gridsetdata.h"
 #include "nbnxm_geometry.h"
+#include "pairlist.h"
 #include "pairlistparams.h"
 
-namespace Nbnxm
+namespace gmx
 {
 
 Grid::Geometry::Geometry(const PairlistType pairlistType) :
@@ -76,25 +91,35 @@ Grid::Geometry::Geometry(const PairlistType pairlistType) :
 {
 }
 
-Grid::Grid(const PairlistType pairlistType, const bool& haveFep) :
-    geometry_(pairlistType), haveFep_(haveFep)
+namespace
+{
+/*! \brief Named constant
+ *
+ * We want the allocator for these two HostVectors to be propagated on
+ * copy construction of Grid during the construction of the vector of
+ * Grids in GridSet. */
+constexpr bool allocatorShouldPropagateDuringCopyConstruction = true;
+} // namespace
+
+Grid::Grid(const PairlistType pairlistType, const bool& haveFep, PinningPolicy pinningPolicy) :
+    geometry_(pairlistType),
+    cxy_na_(HostAllocationPolicy(pinningPolicy, allocatorShouldPropagateDuringCopyConstruction)),
+    cxy_ind_(HostAllocationPolicy(pinningPolicy, allocatorShouldPropagateDuringCopyConstruction)),
+    haveFep_(haveFep)
 {
 }
 
 /*! \brief Returns the atom density (> 0) of a rectangular grid */
-static real gridAtomDensity(int numAtoms, const rvec lowerCorner, const rvec upperCorner)
+static real gridAtomDensity(int numAtoms, const RVec& gridBoundingBoxSize)
 {
-    rvec size;
-
     if (numAtoms == 0)
     {
         /* To avoid zero density we use a minimum of 1 atom */
         numAtoms = 1;
     }
 
-    rvec_sub(upperCorner, lowerCorner, size);
-
-    return static_cast<real>(numAtoms) / (size[XX] * size[YY] * size[ZZ]);
+    return static_cast<real>(numAtoms)
+           / (gridBoundingBoxSize[XX] * gridBoundingBoxSize[YY] * gridBoundingBoxSize[ZZ]);
 }
 
 //! \brief Get approximate dimensions of each cell. Returns the length along X and Y.
@@ -132,15 +157,16 @@ static int getMaxNumCells(const Grid::Geometry& geometry, const int numAtoms, co
     }
 }
 
-void Grid::setDimensions(const int          ddZone,
-                         const int          numAtoms,
-                         gmx::RVec          lowerCorner,
-                         gmx::RVec          upperCorner,
-                         real*              atomDensity,
-                         const real         maxAtomGroupRadius,
-                         const bool         haveFep,
-                         gmx::PinningPolicy pinningPolicy)
+void Grid::setDimensions(const int   ddZone,
+                         const int   numAtoms,
+                         const RVec& lowerCorner,
+                         const RVec& upperCorner,
+                         real*       atomDensity,
+                         const real  maxAtomGroupRadius)
 {
+    dimensions_.lowerCorner = lowerCorner;
+    dimensions_.upperCorner = upperCorner;
+
     /* We allow passing lowerCorner=upperCorner, in which case we need to
      * create a finite sized bounding box to avoid division by zero.
      * We use a minimum size such that the volume fits in float with some
@@ -151,28 +177,29 @@ void Grid::setDimensions(const int          ddZone,
     {
         GMX_ASSERT(upperCorner[d] >= lowerCorner[d],
                    "Upper corner should be larger than the lower corner");
-        if (upperCorner[d] - lowerCorner[d] < c_minimumGridSize)
+        if (dimensions_.upperCorner[d] - dimensions_.lowerCorner[d] < c_minimumGridSize)
         {
             /* Ensure we apply a correction to the bounding box */
             real correction =
                     std::max(std::abs(lowerCorner[d]) * GMX_REAL_EPS, 0.5_real * c_minimumGridSize);
-            lowerCorner[d] -= correction;
-            upperCorner[d] += correction;
+            dimensions_.lowerCorner[d] -= correction;
+            dimensions_.upperCorner[d] += correction;
         }
     }
+
+    const RVec gridBoundingBoxSize = dimensions_.upperCorner - dimensions_.lowerCorner;
+
+    dimensions_.gridSize = gridBoundingBoxSize;
 
     /* For the home zone we compute the density when not set (=-1) or when =0 */
     GMX_ASSERT(atomDensity, "atomDensity cannot be nullptr");
     if (ddZone == 0 && *atomDensity <= 0)
     {
-        *atomDensity = gridAtomDensity(numAtoms, lowerCorner, upperCorner);
+        *atomDensity = gridAtomDensity(numAtoms, gridBoundingBoxSize);
     }
 
     dimensions_.atomDensity        = *atomDensity;
     dimensions_.maxAtomGroupRadius = maxAtomGroupRadius;
-
-    rvec size;
-    rvec_sub(upperCorner, lowerCorner, size);
 
     if (numAtoms > geometry_.numAtomsPerCell)
     {
@@ -185,8 +212,8 @@ void Grid::setDimensions(const int          ddZone,
          * in the pairlist when the fixed cell dimensions (x,y) are
          * larger than the variable one (z) than the other way around.
          */
-        dimensions_.numCells[XX] = std::max(1, static_cast<int>(size[XX] / tlen[XX]));
-        dimensions_.numCells[YY] = std::max(1, static_cast<int>(size[YY] / tlen[YY]));
+        dimensions_.numCells[XX] = std::max(1, static_cast<int>(gridBoundingBoxSize[XX] / tlen[XX]));
+        dimensions_.numCells[YY] = std::max(1, static_cast<int>(gridBoundingBoxSize[YY] / tlen[YY]));
     }
     else
     {
@@ -196,7 +223,7 @@ void Grid::setDimensions(const int          ddZone,
 
     for (int d = 0; d < DIM - 1; d++)
     {
-        dimensions_.cellSize[d]    = size[d] / dimensions_.numCells[d];
+        dimensions_.cellSize[d]    = gridBoundingBoxSize[d] / dimensions_.numCells[d];
         dimensions_.invCellSize[d] = 1 / dimensions_.cellSize[d];
     }
 
@@ -215,8 +242,6 @@ void Grid::setDimensions(const int          ddZone,
     /* We need one additional cell entry for particles moved by DD */
     cxy_na_.resize(numColumns() + 1);
     cxy_ind_.resize(numColumns() + 2);
-    changePinningPolicy(&cxy_na_, pinningPolicy);
-    changePinningPolicy(&cxy_ind_, pinningPolicy);
 
     /* Worst case scenario of 1 atom in each last cell */
     const int maxNumCells = getMaxNumCells(geometry_, numAtoms, numColumns());
@@ -256,17 +281,13 @@ void Grid::setDimensions(const int          ddZone,
     }
 
     flags_.resize(maxNumCells);
-    if (haveFep)
+    if (haveFep_)
     {
         fep_.resize(maxNumCells * geometry_.numAtomsPerCell / geometry_.numAtomsICluster);
     }
-
-    copy_rvec(lowerCorner, dimensions_.lowerCorner);
-    copy_rvec(upperCorner, dimensions_.upperCorner);
-    copy_rvec(size, dimensions_.gridSize);
 }
 
-/* We need to sort paricles in grid columns on z-coordinate.
+/* We need to sort particles in grid columns on z-coordinate.
  * As particle are very often distributed homogeneously, we use a sorting
  * algorithm similar to pigeonhole sort. We multiply the z-coordinate
  * by a factor, cast to an int and try to store in that hole. If the hole
@@ -275,7 +296,7 @@ void Grid::setDimensions(const int          ddZone,
  * 4 is the optimal value for homogeneous particle distribution and allows
  * for an O(#particles) sort up till distributions were all particles are
  * concentrated in 1/4 of the space. No NlogN fallback is implemented,
- * as it can be expensive to detect imhomogeneous particle distributions.
+ * as it can be expensive to detect inhomogeneous particle distributions.
  */
 /*! \brief Ratio of grid cells to atoms */
 static constexpr int c_sortGridRatio = 4;
@@ -294,17 +315,17 @@ static constexpr int c_sortGridMaxSizeFactor = c_sortGridRatio + 1;
  * sort should have a size of at least n_per_h*c_sortGridRatio + n,
  * or easier, allocate at least n*c_sortGridMaxSizeFactor elements.
  */
-static void sort_atoms(int                            dim,
-                       gmx_bool                       Backwards,
-                       int gmx_unused                 dd_zone,
-                       bool gmx_unused                relevantAtomsAreWithinGridBounds,
-                       int*                           a,
-                       int                            n,
-                       gmx::ArrayRef<const gmx::RVec> x,
-                       real                           h0,
-                       real                           invh,
-                       int                            n_per_h,
-                       gmx::ArrayRef<int>             sort)
+static void sort_atoms(int                  dim,
+                       gmx_bool             Backwards,
+                       int gmx_unused       dd_zone,
+                       bool gmx_unused      relevantAtomsAreWithinGridBounds,
+                       int*                 a,
+                       int                  n,
+                       ArrayRef<const RVec> x,
+                       real                 h0,
+                       real                 invh,
+                       int                  n_per_h,
+                       ArrayRef<int>        sort)
 {
     if (n <= 1)
     {
@@ -464,7 +485,7 @@ static float R2F_U(const float x)
 #endif
 
 //! Computes the bounding box for na coordinates in order x,y,z, bb order xyz0
-static void calc_bounding_box(int na, int stride, const real* x, BoundingBox* bb)
+static void calc_bounding_box(const int numAtoms, const int stride, const real* x, BoundingBox* bb)
 {
     int  i  = 0;
     real xl = x[i + XX];
@@ -474,7 +495,7 @@ static void calc_bounding_box(int na, int stride, const real* x, BoundingBox* bb
     real zl = x[i + ZZ];
     real zh = x[i + ZZ];
     i += stride;
-    for (int j = 1; j < na; j++)
+    for (int j = 1; j < numAtoms; j++)
     {
         xl = std::min(xl, x[i + XX]);
         xh = std::max(xh, x[i + XX]);
@@ -493,23 +514,29 @@ static void calc_bounding_box(int na, int stride, const real* x, BoundingBox* bb
     bb->upper.z = R2F_U(zh);
 }
 
-/*! \brief Computes the bounding box for na packed coordinates, bb order xyz0 */
-static void calc_bounding_box_x_x4(int na, const real* x, BoundingBox* bb)
+/*! \brief Computes the bounding box for packed coordinates
+ * \tparam     packSize  The pack size for the coordinates, also the number of atoms per cell
+ * \param[in]  numAtoms  The actual number of atoms in this cell
+ * \param[in]  x         Packed coodinates
+ * \param[out] bb        Pointer to the bounding box
+ */
+template<int packSize>
+static void calcBoundingBoxXPacked(const int numAtoms, const real* x, BoundingBox* bb)
 {
-    real xl = x[XX * c_packX4];
-    real xh = x[XX * c_packX4];
-    real yl = x[YY * c_packX4];
-    real yh = x[YY * c_packX4];
-    real zl = x[ZZ * c_packX4];
-    real zh = x[ZZ * c_packX4];
-    for (int j = 1; j < na; j++)
+    real xl = x[XX * packSize];
+    real xh = x[XX * packSize];
+    real yl = x[YY * packSize];
+    real yh = x[YY * packSize];
+    real zl = x[ZZ * packSize];
+    real zh = x[ZZ * packSize];
+    for (int j = 1; j < numAtoms; j++)
     {
-        xl = std::min(xl, x[j + XX * c_packX4]);
-        xh = std::max(xh, x[j + XX * c_packX4]);
-        yl = std::min(yl, x[j + YY * c_packX4]);
-        yh = std::max(yh, x[j + YY * c_packX4]);
-        zl = std::min(zl, x[j + ZZ * c_packX4]);
-        zh = std::max(zh, x[j + ZZ * c_packX4]);
+        xl = std::min(xl, x[j + XX * packSize]);
+        xh = std::max(xh, x[j + XX * packSize]);
+        yl = std::min(yl, x[j + YY * packSize]);
+        yh = std::max(yh, x[j + YY * packSize]);
+        zl = std::min(zl, x[j + ZZ * packSize]);
+        zh = std::max(zh, x[j + ZZ * packSize]);
     }
     /* Note: possible double to float conversion here */
     bb->lower.x = R2F_D(xl);
@@ -520,44 +547,28 @@ static void calc_bounding_box_x_x4(int na, const real* x, BoundingBox* bb)
     bb->upper.z = R2F_U(zh);
 }
 
-/*! \brief Computes the bounding box for na coordinates, bb order xyz0 */
-static void calc_bounding_box_x_x8(int na, const real* x, BoundingBox* bb)
-{
-    real xl = x[XX * c_packX8];
-    real xh = x[XX * c_packX8];
-    real yl = x[YY * c_packX8];
-    real yh = x[YY * c_packX8];
-    real zl = x[ZZ * c_packX8];
-    real zh = x[ZZ * c_packX8];
-    for (int j = 1; j < na; j++)
-    {
-        xl = std::min(xl, x[j + XX * c_packX8]);
-        xh = std::max(xh, x[j + XX * c_packX8]);
-        yl = std::min(yl, x[j + YY * c_packX8]);
-        yh = std::max(yh, x[j + YY * c_packX8]);
-        zl = std::min(zl, x[j + ZZ * c_packX8]);
-        zh = std::max(zh, x[j + ZZ * c_packX8]);
-    }
-    /* Note: possible double to float conversion here */
-    bb->lower.x = R2F_D(xl);
-    bb->lower.y = R2F_D(yl);
-    bb->lower.z = R2F_D(zl);
-    bb->upper.x = R2F_U(xh);
-    bb->upper.y = R2F_U(yh);
-    bb->upper.z = R2F_U(zh);
-}
-
-/*! \brief Computes the bounding box for na packed coordinates, bb order xyz0 */
-gmx_unused static void calc_bounding_box_x_x4_halves(int na, const real* x, BoundingBox* bb, BoundingBox* bbj)
+/*! \brief Computes the whole plus half bounding boxes for packed coordinates
+ *
+ * \tparam     packSize  The pack size for the coordinates, also the number of atoms per cell
+ * \param[in]  numAtoms  The actual number of atoms in this cell
+ * \param[in]  x         Packed coodinates
+ * \param[out] bb        Pointer to the bounding box for the whole cell
+ * \param[out] bbj       Pointer to the bounding boxes for the two halves of the cell
+ */
+template<int packSize>
+gmx_unused static void calcBoundingBoxHalves(const int numAtoms, const real* x, BoundingBox* bb, BoundingBox* bbj)
 {
     // TODO: During SIMDv2 transition only some archs use namespace (remove when done)
     using namespace gmx;
 
-    calc_bounding_box_x_x4(std::min(na, 2), x, bbj);
+    constexpr int halfPackSize = packSize / 2;
 
-    if (na > 2)
+    calcBoundingBoxXPacked<packSize>(std::min(numAtoms, halfPackSize), x, bbj);
+
+    if (numAtoms > halfPackSize)
     {
-        calc_bounding_box_x_x4(std::min(na - 2, 2), x + (c_packX4 >> 1), bbj + 1);
+        calcBoundingBoxXPacked<packSize>(
+                std::min(numAtoms - halfPackSize, halfPackSize), x + halfPackSize, bbj + 1);
     }
     else
     {
@@ -645,16 +656,18 @@ static void calc_bounding_box_simd4(int na, const float* x, BoundingBox* bb)
 #    if NBNXN_BBXXXX
 
 /*! \brief Computes the bounding box for na coordinates in order xyz?, bb order xxxxyyyyzzzz */
-static void calc_bounding_box_xxxx_simd4(int na, const float* x, BoundingBox* bb_work_aligned, real* bb)
+static void calc_bounding_box_xxxx_simd4(int na, const float* x, real* bb)
 {
-    calc_bounding_box_simd4(na, x, bb_work_aligned);
+    alignas(GMX_SIMD_ALIGNMENT) BoundingBox bbWorkAligned;
 
-    bb[0 * c_packedBoundingBoxesDimSize] = bb_work_aligned->lower.x;
-    bb[1 * c_packedBoundingBoxesDimSize] = bb_work_aligned->lower.y;
-    bb[2 * c_packedBoundingBoxesDimSize] = bb_work_aligned->lower.z;
-    bb[3 * c_packedBoundingBoxesDimSize] = bb_work_aligned->upper.x;
-    bb[4 * c_packedBoundingBoxesDimSize] = bb_work_aligned->upper.y;
-    bb[5 * c_packedBoundingBoxesDimSize] = bb_work_aligned->upper.z;
+    calc_bounding_box_simd4(na, x, &bbWorkAligned);
+
+    bb[0 * c_packedBoundingBoxesDimSize] = bbWorkAligned.lower.x;
+    bb[1 * c_packedBoundingBoxesDimSize] = bbWorkAligned.lower.y;
+    bb[2 * c_packedBoundingBoxesDimSize] = bbWorkAligned.lower.z;
+    bb[3 * c_packedBoundingBoxesDimSize] = bbWorkAligned.upper.x;
+    bb[4 * c_packedBoundingBoxesDimSize] = bbWorkAligned.upper.y;
+    bb[5 * c_packedBoundingBoxesDimSize] = bbWorkAligned.upper.z;
 }
 
 #    endif /* NBNXN_BBXXXX */
@@ -663,9 +676,7 @@ static void calc_bounding_box_xxxx_simd4(int na, const float* x, BoundingBox* bb
 
 
 /*! \brief Combines pairs of consecutive bounding boxes */
-static void combine_bounding_box_pairs(const Grid&                      grid,
-                                       gmx::ArrayRef<const BoundingBox> bb,
-                                       gmx::ArrayRef<BoundingBox>       bbj)
+static void combine_bounding_box_pairs(const Grid& grid, ArrayRef<const BoundingBox> bb, ArrayRef<BoundingBox> bbj)
 {
     // TODO: During SIMDv2 transition only some archs use namespace (remove when done)
     using namespace gmx;
@@ -798,12 +809,12 @@ static void print_bbsizes_supersub(FILE* fp, const Grid& grid)
  *
  * Sorts atoms on LJ coefficients: !=0 first, ==0 at the end.
  */
-static void sort_cluster_on_flag(int                          numAtomsInCluster,
-                                 int                          atomStart,
-                                 int                          atomEnd,
-                                 gmx::ArrayRef<const int64_t> atomInfo,
-                                 gmx::ArrayRef<int>           order,
-                                 int*                         flags)
+static void sort_cluster_on_flag(int                     numAtomsInCluster,
+                                 int                     atomStart,
+                                 int                     atomEnd,
+                                 ArrayRef<const int32_t> atomInfo,
+                                 ArrayRef<int>           order,
+                                 int*                    flags)
 {
     constexpr int c_maxNumAtomsInCluster = 8;
     int           sort1[c_maxNumAtomsInCluster];
@@ -824,9 +835,9 @@ static void sort_cluster_on_flag(int                          numAtomsInCluster,
         int  a_lj_max = -1;
         for (int a = s; a < std::min(s + numAtomsInCluster, atomEnd); a++)
         {
-            haveQ = haveQ || bool(atomInfo[order[a]] & gmx::sc_atomInfo_HasCharge);
+            haveQ = haveQ || bool(atomInfo[order[a]] & sc_atomInfo_HasCharge);
 
-            if (atomInfo[order[a]] & (gmx::sc_atomInfo_HasVdw))
+            if (atomInfo[order[a]] & (sc_atomInfo_HasVdw))
             {
                 sort1[n1++] = order[a];
                 a_lj_max    = a;
@@ -875,18 +886,17 @@ static void sort_cluster_on_flag(int                          numAtomsInCluster,
  *
  * Potentially sorts atoms and sets the interaction flags.
  */
-void Grid::fillCell(GridSetData*                   gridSetData,
-                    nbnxn_atomdata_t*              nbat,
-                    int                            atomStart,
-                    int                            atomEnd,
-                    gmx::ArrayRef<const int64_t>   atomInfo,
-                    gmx::ArrayRef<const gmx::RVec> x,
-                    BoundingBox gmx_unused* bb_work_aligned)
+void Grid::fillCell(GridSetData*            gridSetData,
+                    nbnxn_atomdata_t*       nbat,
+                    int                     atomStart,
+                    int                     atomEnd,
+                    ArrayRef<const int32_t> atomInfo,
+                    ArrayRef<const RVec>    x)
 {
     const int numAtoms = atomEnd - atomStart;
 
-    const gmx::ArrayRef<int>& cells       = gridSetData->cells;
-    const gmx::ArrayRef<int>& atomIndices = gridSetData->atomIndices;
+    const ArrayRef<int>& cells       = gridSetData->cells;
+    const ArrayRef<int>& atomIndices = gridSetData->atomIndices;
 
     if (geometry_.isSimple)
     {
@@ -912,7 +922,7 @@ void Grid::fillCell(GridSetData*                   gridSetData,
         fep_[cell] = 0;
         for (int at = atomStart; at < atomEnd; at++)
         {
-            if (atomIndices[at] >= 0 && (atomInfo[atomIndices[at]] & gmx::sc_atomInfo_FreeEnergyPerturbation))
+            if (atomIndices[at] >= 0 && (atomInfo[atomIndices[at]] & sc_atomInfo_FreeEnergyPerturbation))
             {
                 fep_[cell] |= (1 << (at - atomStart));
             }
@@ -939,18 +949,19 @@ void Grid::fillCell(GridSetData*                   gridSetData,
         size_t       offset = atomToCluster(atomStart - cellOffset_ * geometry_.numAtomsICluster);
         BoundingBox* bb_ptr = bb_.data() + offset;
 
-#if GMX_SIMD && GMX_SIMD_REAL_WIDTH == 2
+#if GMX_SIMD
         if (2 * geometry_.numAtomsJCluster == geometry_.numAtomsICluster)
         {
-            calc_bounding_box_x_x4_halves(numAtoms,
-                                          nbat->x().data() + atom_to_x_index<c_packX4>(atomStart),
-                                          bb_ptr,
-                                          bbj_.data() + offset * 2);
+            calcBoundingBoxHalves<c_packX4>(numAtoms,
+                                            nbat->x().data() + atom_to_x_index<c_packX4>(atomStart),
+                                            bb_ptr,
+                                            bbj_.data() + offset * 2);
         }
         else
 #endif
         {
-            calc_bounding_box_x_x4(numAtoms, nbat->x().data() + atom_to_x_index<c_packX4>(atomStart), bb_ptr);
+            calcBoundingBoxXPacked<c_packX4>(
+                    numAtoms, nbat->x().data() + atom_to_x_index<c_packX4>(atomStart), bb_ptr);
         }
     }
     else if (nbat->XFormat == nbatX8)
@@ -959,7 +970,8 @@ void Grid::fillCell(GridSetData*                   gridSetData,
         size_t       offset = atomToCluster(atomStart - cellOffset_ * geometry_.numAtomsICluster);
         BoundingBox* bb_ptr = bb_.data() + offset;
 
-        calc_bounding_box_x_x8(numAtoms, nbat->x().data() + atom_to_x_index<c_packX8>(atomStart), bb_ptr);
+        calcBoundingBoxXPacked<c_packX8>(
+                numAtoms, nbat->x().data() + atom_to_x_index<c_packX8>(atomStart), bb_ptr);
     }
 #if NBNXN_BBXXXX
     else if (!geometry_.isSimple)
@@ -975,9 +987,7 @@ void Grid::fillCell(GridSetData*                   gridSetData,
 #    if NBNXN_SEARCH_SIMD4_FLOAT_X_BB
         if (nbat->XFormat == nbatXYZQ)
         {
-            GMX_ASSERT(bb_work_aligned != nullptr, "Must have valid aligned work structure");
-            calc_bounding_box_xxxx_simd4(
-                    numAtoms, nbat->x().data() + atomStart * nbat->xstride, bb_work_aligned, pbb_ptr);
+            calc_bounding_box_xxxx_simd4(numAtoms, nbat->x().data() + atomStart * nbat->xstride, pbb_ptr);
         }
         else
 #    endif
@@ -1023,13 +1033,13 @@ void Grid::fillCell(GridSetData*                   gridSetData,
     }
 }
 
-void Grid::sortColumnsCpuGeometry(GridSetData*                   gridSetData,
-                                  int                            dd_zone,
-                                  gmx::ArrayRef<const int64_t>   atomInfo,
-                                  gmx::ArrayRef<const gmx::RVec> x,
-                                  nbnxn_atomdata_t*              nbat,
-                                  const gmx::Range<int>          columnRange,
-                                  gmx::ArrayRef<int>             sort_work)
+void Grid::sortColumnsCpuGeometry(GridSetData*            gridSetData,
+                                  int                     dd_zone,
+                                  ArrayRef<const int32_t> atomInfo,
+                                  ArrayRef<const RVec>    x,
+                                  nbnxn_atomdata_t*       nbat,
+                                  const Range<int>        columnRange,
+                                  ArrayRef<int>           sort_work)
 {
     if (debug)
     {
@@ -1075,7 +1085,7 @@ void Grid::sortColumnsCpuGeometry(GridSetData*                   gridSetData,
             const int numAtomsLeftInColumn = std::max(numAtoms - (atomOffsetCell - atomOffset), 0);
             const int numAtomsCell         = std::min(numAtomsPerCell, numAtomsLeftInColumn);
 
-            fillCell(gridSetData, nbat, atomOffsetCell, atomOffsetCell + numAtomsCell, atomInfo, x, nullptr);
+            fillCell(gridSetData, nbat, atomOffsetCell, atomOffsetCell + numAtomsCell, atomInfo, x);
 
             /* This copy to bbcz is not really necessary.
              * But it allows to use the same grid search code
@@ -1098,18 +1108,14 @@ void Grid::sortColumnsCpuGeometry(GridSetData*                   gridSetData,
 }
 
 /* Spatially sort the atoms within one grid column */
-void Grid::sortColumnsGpuGeometry(GridSetData*                   gridSetData,
-                                  int                            dd_zone,
-                                  gmx::ArrayRef<const int64_t>   atomInfo,
-                                  gmx::ArrayRef<const gmx::RVec> x,
-                                  nbnxn_atomdata_t*              nbat,
-                                  const gmx::Range<int>          columnRange,
-                                  gmx::ArrayRef<int>             sort_work)
+void Grid::sortColumnsGpuGeometry(GridSetData*            gridSetData,
+                                  int                     dd_zone,
+                                  ArrayRef<const int32_t> atomInfo,
+                                  ArrayRef<const RVec>    x,
+                                  nbnxn_atomdata_t*       nbat,
+                                  const Range<int>        columnRange,
+                                  ArrayRef<int>           sort_work)
 {
-    BoundingBox bb_work_array[2];
-    auto*       bb_work_aligned = reinterpret_cast<BoundingBox*>(
-            (reinterpret_cast<std::size_t>(bb_work_array + 1)) & (~(static_cast<std::size_t>(15))));
-
     if (debug)
     {
         fprintf(debug,
@@ -1128,7 +1134,7 @@ void Grid::sortColumnsGpuGeometry(GridSetData*                   gridSetData,
     const int subdiv_z = c_gpuNumClusterPerCellY * subdiv_y;
 
     /* Extract the atom index array that will be filled here */
-    const gmx::ArrayRef<int>& atomIndices = gridSetData->atomIndices;
+    const ArrayRef<int>& atomIndices = gridSetData->atomIndices;
 
     /* Sort the atoms within each x,y column in 3 dimensions.
      * Loop over all columns on the x/y grid.
@@ -1172,9 +1178,8 @@ void Grid::sortColumnsGpuGeometry(GridSetData*                   gridSetData,
                 const int numAtoms =
                         std::min(numAtomsPerCell, numAtomsInColumn - (atomOffsetZ - atomOffset));
 
-                numClusters_[cell] = std::min(
-                        c_gpuNumClusterPerCell,
-                        (numAtoms + geometry_.numAtomsICluster - 1) / geometry_.numAtomsICluster);
+                numClusters_[cell] = std::min(c_gpuNumClusterPerCell,
+                                              divideRoundUp(numAtoms, geometry_.numAtomsICluster));
 
                 /* Store the z-boundaries of the bounding box of the cell */
                 bbcz_[cell].lower = x[atomIndices[atomOffsetZ]][ZZ];
@@ -1224,7 +1229,7 @@ void Grid::sortColumnsGpuGeometry(GridSetData*                   gridSetData,
                     const int numAtomsX =
                             std::min(subdiv_x, numAtomsInColumn - (atomOffsetX - atomOffset));
 
-                    fillCell(gridSetData, nbat, atomOffsetX, atomOffsetX + numAtomsX, atomInfo, x, bb_work_aligned);
+                    fillCell(gridSetData, nbat, atomOffsetX, atomOffsetX + numAtomsX, atomInfo, x);
                 }
             }
         }
@@ -1238,22 +1243,22 @@ void Grid::sortColumnsGpuGeometry(GridSetData*                   gridSetData,
 }
 
 /*! \brief Sets the cell index in the cell array for atom \p atomIndex and increments the atom count for the grid column */
-static void setCellAndAtomCount(gmx::ArrayRef<int> cell, int cellIndex, gmx::ArrayRef<int> cxy_na, int atomIndex)
+static void setCellAndAtomCount(ArrayRef<int> cell, int cellIndex, ArrayRef<int> cxy_na, int atomIndex)
 {
     cell[atomIndex] = cellIndex;
     cxy_na[cellIndex] += 1;
 }
 
-void Grid::calcColumnIndices(const Grid::Dimensions&        gridDims,
-                             const gmx::UpdateGroupsCog*    updateGroupsCog,
-                             const gmx::Range<int>          atomRange,
-                             gmx::ArrayRef<const gmx::RVec> x,
-                             const int                      dd_zone,
-                             const int*                     move,
-                             const int                      thread,
-                             const int                      nthread,
-                             gmx::ArrayRef<int>             cell,
-                             gmx::ArrayRef<int>             cxy_na)
+void Grid::calcColumnIndices(const Grid::Dimensions& gridDims,
+                             const UpdateGroupsCog*  updateGroupsCog,
+                             const Range<int>        atomRange,
+                             ArrayRef<const RVec>    x,
+                             const int               dd_zone,
+                             const int*              move,
+                             const int               thread,
+                             const int               nthread,
+                             ArrayRef<int>           cell,
+                             ArrayRef<int>           cxy_na)
 {
     const int numColumns = gridDims.numCells[XX] * gridDims.numCells[YY];
 
@@ -1263,10 +1268,10 @@ void Grid::calcColumnIndices(const Grid::Dimensions&        gridDims,
         cxy_na[i] = 0;
     }
 
-    // Use gmx::Index to avoid overflow of int with large atom and thread counts
-    const gmx::Index rangeSize     = atomRange.size();
-    const int        taskAtomStart = *atomRange.begin() + ((thread + 0) * rangeSize) / nthread;
-    const int        taskAtomEnd   = *atomRange.begin() + ((thread + 1) * rangeSize) / nthread;
+    // Use Index to avoid overflow of int with large atom and thread counts
+    const Index rangeSize     = atomRange.size();
+    const int   taskAtomStart = *atomRange.begin() + ((thread + 0) * rangeSize) / nthread;
+    const int   taskAtomEnd   = *atomRange.begin() + ((thread + 1) * rangeSize) / nthread;
 
     if (dd_zone == 0)
     {
@@ -1276,7 +1281,7 @@ void Grid::calcColumnIndices(const Grid::Dimensions&        gridDims,
             if (move == nullptr || move[i] >= 0)
             {
 
-                const gmx::RVec& coord = (updateGroupsCog ? updateGroupsCog->cogForAtom(i) : x[i]);
+                const RVec& coord = (updateGroupsCog ? updateGroupsCog->cogForAtom(i) : x[i]);
 
                 /* We need to be careful with rounding,
                  * particles might be a few bits outside the local zone.
@@ -1353,6 +1358,7 @@ void Grid::calcColumnIndices(const Grid::Dimensions&        gridDims,
 /*! \brief Resizes grid and atom data which depend on the number of cells */
 static void resizeForNumberOfCells(const int         numNbnxnAtoms,
                                    const int         numAtomsMoved,
+                                   const int         ddZone,
                                    GridSetData*      gridSetData,
                                    nbnxn_atomdata_t* nbat)
 {
@@ -1364,18 +1370,18 @@ static void resizeForNumberOfCells(const int         numNbnxnAtoms,
     gridSetData->atomIndices.resize(numNbnxnAtoms + numAtomsMoved);
 
     /* Make space in nbat for storing the atom coordinates */
-    nbat->resizeCoordinateBuffer(numNbnxnAtoms);
+    nbat->resizeCoordinateBuffer(numNbnxnAtoms, ddZone);
 }
 
-void Grid::setCellIndices(int                            ddZone,
-                          int                            cellOffset,
-                          GridSetData*                   gridSetData,
-                          gmx::ArrayRef<GridWork>        gridWork,
-                          const gmx::Range<int>          atomRange,
-                          gmx::ArrayRef<const int64_t>   atomInfo,
-                          gmx::ArrayRef<const gmx::RVec> x,
-                          const int                      numAtomsMoved,
-                          nbnxn_atomdata_t*              nbat)
+void Grid::setCellIndices(int                  ddZone,
+                          int                  cellOffset,
+                          GridSetData*         gridSetData,
+                          ArrayRef<GridWork>   gridWork,
+                          const Range<int>     atomRange,
+                          const int            numGridAtomsWithoutFillers,
+                          ArrayRef<const int>  atomInfo,
+                          ArrayRef<const RVec> x,
+                          nbnxn_atomdata_t*    nbat)
 {
     cellOffset_ = cellOffset;
 
@@ -1405,8 +1411,8 @@ void Grid::setCellIndices(int                            ddZone,
         {
             cxy_na_i += gridWork[thread].numAtomsPerColumn[i];
         }
-        ncz = (cxy_na_i + numAtomsPerCell - 1) / numAtomsPerCell;
-        if (nbat->XFormat == nbatX8)
+        ncz = divideRoundUp(cxy_na_i, numAtomsPerCell);
+        if (geometry_.numAtomsJCluster == 2 * numAtomsPerCell)
         {
             /* Make the number of cell a multiple of 2 */
             ncz = (ncz + 1) & ~1;
@@ -1419,7 +1425,8 @@ void Grid::setCellIndices(int                            ddZone,
     numCellsColumnMax_ = ncz_max;
 
     /* Resize grid and atom data which depend on the number of cells */
-    resizeForNumberOfCells(atomIndexEnd(), numAtomsMoved, gridSetData, nbat);
+    const int numAtomsMoved = atomRange.size() - numGridAtomsWithoutFillers;
+    resizeForNumberOfCells(atomIndexEnd(), numAtomsMoved, ddZone, gridSetData, nbat);
 
     if (debug)
     {
@@ -1449,7 +1456,7 @@ void Grid::setCellIndices(int                            ddZone,
 
     /* Make sure the work array for sorting is large enough */
     const int worstCaseSortBufferSize = ncz_max * numAtomsPerCell * c_sortGridMaxSizeFactor;
-    if (worstCaseSortBufferSize > gmx::Index(gridWork[0].sortBuffer.size()))
+    if (worstCaseSortBufferSize > Index(gridWork[0].sortBuffer.size()))
     {
         for (GridWork& work : gridWork)
         {
@@ -1461,8 +1468,8 @@ void Grid::setCellIndices(int                            ddZone,
     /* Now we know the dimensions we can fill the grid.
      * This is the first, unsorted fill. We sort the columns after this.
      */
-    gmx::ArrayRef<int> cells       = gridSetData->cells;
-    gmx::ArrayRef<int> atomIndices = gridSetData->atomIndices;
+    ArrayRef<int> cells       = gridSetData->cells;
+    ArrayRef<int> atomIndices = gridSetData->atomIndices;
     for (int i : atomRange)
     {
         /* At this point nbs->cell contains the local grid x,y indices */
@@ -1487,8 +1494,8 @@ void Grid::setCellIndices(int                            ddZone,
     {
         try
         {
-            gmx::Range<int> columnRange(((thread + 0) * numColumns()) / nthread,
-                                        ((thread + 1) * numColumns()) / nthread);
+            Range<int> columnRange(((thread + 0) * numColumns()) / nthread,
+                                   ((thread + 1) * numColumns()) / nthread);
             if (geometry_.isSimple)
             {
                 sortColumnsCpuGeometry(
@@ -1503,7 +1510,7 @@ void Grid::setCellIndices(int                            ddZone,
         GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
     }
 
-    if (geometry_.isSimple && nbat->XFormat == nbatX8)
+    if (geometry_.isSimple && geometry_.numAtomsJCluster == 2 * numAtomsPerCell)
     {
         combine_bounding_box_pairs(*this, bb_, bbj_);
     }
@@ -1535,28 +1542,23 @@ void Grid::setCellIndices(int                            ddZone,
     }
 }
 
-real generateAndFill2DGrid(Grid*                          grid,
-                           gmx::ArrayRef<GridWork>        gridWork,
-                           gmx::HostVector<int>*          cells,
-                           const rvec                     lowerCorner,
-                           const rvec                     upperCorner,
-                           const gmx::UpdateGroupsCog*    updateGroupsCog,
-                           const gmx::Range<int>          atomRange,
-                           real*                          atomDensity,
-                           const real                     maxAtomGroupRadius,
-                           const bool                     haveFep,
-                           gmx::ArrayRef<const gmx::RVec> x,
-                           const int                      ddZone,
-                           const int*                     move,
-                           const int                      numAtomsMoved,
-                           const bool                     computeGridDensityRatio)
+real generateAndFill2DGrid(Grid*                  grid,
+                           ArrayRef<GridWork>     gridWork,
+                           HostVector<int>*       cells,
+                           const rvec             lowerCorner,
+                           const rvec             upperCorner,
+                           const UpdateGroupsCog* updateGroupsCog,
+                           const Range<int>       atomRange,
+                           const int              numGridAtomsWithoutFillers,
+                           real*                  atomDensity,
+                           const real             maxAtomGroupRadius,
+                           ArrayRef<const RVec>   x,
+                           const int              ddZone,
+                           const int*             move,
+                           const bool             computeGridDensityRatio)
 {
-    const int n = atomRange.size();
-    // grid data used in GPU transfers inherits the gridset pinning policy
-    const auto pinPolicy = cells->get_allocator().pinningPolicy();
-
     grid->setDimensions(
-            ddZone, n - numAtomsMoved, lowerCorner, upperCorner, atomDensity, maxAtomGroupRadius, haveFep, pinPolicy);
+            ddZone, numGridAtomsWithoutFillers, lowerCorner, upperCorner, atomDensity, maxAtomGroupRadius);
 
     for (GridWork& work : gridWork)
     {
@@ -1601,11 +1603,10 @@ real generateAndFill2DGrid(Grid*                          grid,
             {
                 numAtomsInColumn += gridWork[thread].numAtomsPerColumn[i];
             }
-            sumAtomsInColumnSquared += gmx::square(numAtomsInColumn);
+            sumAtomsInColumnSquared += square(numAtomsInColumn);
         }
         // The effective density divided by the uniform density
-        gridDensityRatio =
-                sumAtomsInColumnSquared * grid->numColumns() / gmx::square(real(atomRange.size()));
+        gridDensityRatio = sumAtomsInColumnSquared * grid->numColumns() / square(real(atomRange.size()));
         if (debug)
         {
             fprintf(debug, "ns grid effective density ratio %f\n", gridDensityRatio);
@@ -1615,4 +1616,4 @@ real generateAndFill2DGrid(Grid*                          grid,
     return gridDensityRatio;
 }
 
-} // namespace Nbnxm
+} // namespace gmx

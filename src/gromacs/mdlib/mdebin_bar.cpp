@@ -40,15 +40,20 @@
 #include <cmath>
 #include <cstring>
 
+#include <filesystem>
 #include <memory>
+#include <string>
 
 #include "gromacs/fileio/enxio.h"
+#include "gromacs/fileio/xdr_datatype.h"
 #include "gromacs/mdlib/energyoutput.h"
 #include "gromacs/mdtypes/energyhistory.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/trajectory/energyframe.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
@@ -168,7 +173,7 @@ static void mde_delta_h_make_hist(t_mde_delta_h* dh, int hi, gmx_bool invert)
        Get this start value in number of histogram dxs from zero,
        as an integer.*/
 
-    dh->x0[hi] = static_cast<int64_t>(floor(min_dh / dx));
+    dh->x0[hi] = static_cast<int64_t>(std::floor(min_dh / dx));
 
     min_dh_hist = (dh->x0[hi]) * dx;
     max_dh_hist = (dh->x0[hi] + dh->nbins + 1) * dx;
@@ -376,7 +381,7 @@ t_mde_delta_h_coll::t_mde_delta_h_coll(const t_inputrec& inputrec)
 
     /* this is the compatibility lambda value. If it is >=0, it is valid,
        and there is either an old-style lambda or a slow growth simulation. */
-    start_lambda = inputrec.fepvals->init_lambda;
+    start_lambda = inputrec.fepvals->init_lambda_without_states;
     /* for continuous change of lambda values */
     delta_lambda = inputrec.fepvals->delta_lambda * inputrec.fepvals->nstdhdl;
 
@@ -482,7 +487,7 @@ t_mde_delta_h_coll::t_mde_delta_h_coll(const t_inputrec& inputrec)
 
         /* now initialize them */
         /* the order, for now, must match that of the dhdl.xvg file because of
-           how g_energy -odh is implemented */
+           how gmx energy -odh is implemented */
         n = 0;
         if (bExpanded)
         {
@@ -527,7 +532,7 @@ t_mde_delta_h_coll::t_mde_delta_h_coll(const t_inputrec& inputrec)
                                      dhbtDHDL,
                                      n_lambda_components,
                                      1,
-                                     &(fep->init_lambda));
+                                     &fep->init_lambda_without_states);
                     n++;
                     n_lambda_components++;
                 }

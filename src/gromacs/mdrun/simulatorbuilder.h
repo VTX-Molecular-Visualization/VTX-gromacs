@@ -40,8 +40,9 @@
 #ifndef GMX_MDRUN_SIMULATORBUILDER_H
 #define GMX_MDRUN_SIMULATORBUILDER_H
 
-#include <memory>
+#include <cstdio>
 
+#include <memory>
 
 class energyhistory_t;
 class gmx_ekindata_t;
@@ -337,12 +338,19 @@ public:
 class SimulatorBuilder
 {
 public:
+    /*!
+     * \brief Default constructor for SimulatorBuilder.
+     */
+    SimulatorBuilder();
+
+    /*!
+     * \brief Default destructor for SimulatorBuilder.
+     */
+    ~SimulatorBuilder();
+
     void add(MembedHolder&& membedHolder);
 
-    void add(std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder)
-    {
-        stopHandlerBuilder_ = std::move(stopHandlerBuilder);
-    }
+    void add(std::unique_ptr<StopHandlerBuilder> stopHandlerBuilder);
 
     void add(SimulatorStateData&& simulatorStateData)
     {

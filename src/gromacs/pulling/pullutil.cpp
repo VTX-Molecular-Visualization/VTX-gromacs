@@ -36,8 +36,16 @@
 #include "config.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdlib>
 
+#include <array>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <vector>
+
+#include "gromacs/domdec/localatomset.h"
 #include "gromacs/fileio/confio.h"
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/math/functions.h"
@@ -48,11 +56,13 @@
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pulling/pull.h"
 #include "gromacs/pulling/pull_internal.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
@@ -306,7 +316,8 @@ static void make_cyl_refgrps(const t_commrec*     cr,
         pullAllReduce(cr, comm, pull->coord.size() * c_cylinderBufferStride, comm->cylinderBuffer.data());
     }
 
-    bufferOffset = 0;
+    int pullCoordIndex = 0;
+    bufferOffset       = 0;
     for (pull_coord_work_t& pcrd : pull->coord)
     {
         if (pcrd.params_.eGeom == PullGroupGeometry::Cylinder)
@@ -318,8 +329,18 @@ static void make_cyl_refgrps(const t_commrec*     cr,
             auto buffer = gmx::constArrayRefFromArray(comm->cylinderBuffer.data() + bufferOffset,
                                                       c_cylinderBufferStride);
             bufferOffset += c_cylinderBufferStride;
-            double wmass          = buffer[0];
-            double wwmass         = buffer[1];
+            const double wmass  = buffer[0];
+            const double wwmass = buffer[1];
+            if (wmass == 0)
+            {
+                gmx_fatal(FARGS,
+                          "The mass of the cylinder selection of pull group %d is zero. "
+                          "This means that group %d does not cover the whole area. "
+                          "Maybe you did not put the correct group as group 1 in the pull "
+                          "coordinate?",
+                          pullCoordIndex + 1,
+                          pullCoordIndex + 1);
+            }
             dynamicGroup0.mwscale = 1.0 / wmass;
             /* Cylinder pulling can't be used with constraints, but we set
              * wscale and invtm anyhow, in case someone would like to use them.
@@ -349,6 +370,8 @@ static void make_cyl_refgrps(const t_commrec*     cr,
                 spatialData.ffrad[m] = (buffer[6 + m] + buffer[3 + m] * spatialData.cyl_dev) / wmass;
             }
         }
+
+        pullCoordIndex++;
     }
 }
 
@@ -356,7 +379,7 @@ static double atan2_0_2pi(double y, double x)
 {
     double a;
 
-    a = atan2(y, x);
+    a = std::atan2(y, x);
     if (a < 0)
     {
         a += 2.0 * M_PI;
@@ -759,7 +782,7 @@ void pull_calc_coms(const t_commrec*     cr,
                 snw                   = comBuffer[0][1];
                 pgrp->x[pull->cosdim] = atan2_0_2pi(snw, csw) / twopi_box;
                 /* Set the weights for the local atoms */
-                wmass  = sqrt(csw * csw + snw * snw);
+                wmass  = std::sqrt(csw * csw + snw * snw);
                 wwmass = (comBuffer[1][0] * csw * csw + comBuffer[1][1] * csw * snw
                           + comBuffer[1][2] * snw * snw)
                          / (wmass * wmass);

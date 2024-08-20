@@ -10,7 +10,7 @@ Running Membrane Simulations
 
 Users frequently encounter problems when running simulations of lipid bilayers, especially
 when a protein is involved. Users seeking to simulate membrane proteins may find this
-`tutorial <http://www.mdtutorials.com/gmx/membrane_protein/index.html>`__ useful.
+`tutorial <https://tutorials.gromacs.org/membrane-protein.html>`__ useful.
 
 One protocol for the simulation of membrane proteins consists of the following steps:
 
@@ -47,7 +47,7 @@ External material
 
 * `Membrane simulations slides <https://extras.csc.fi/chem/courses/gmx2007/Erik_Talks/membrane_simulations.pdf>`_ ,
   `membrane simulations video <https://video.csc.fi/playlist/dedicated/0_7z3nas0q/0_0tr9yd2p>`_ - (Erik Lindahl).
-* |Gromacs| `tutorial for membrane protein simulations
+* `tutorial for membrane protein simulations
   <http://www.mdtutorials.com/gmx/membrane_protein/index.html>`__ - designed to demonstrate what sorts of
   questions and problems occur when simulating proteins that are embedded within a lipid bilayer.
 * `Combining the OPLS-AA forcefield with the Berger lipids <http://pomes.biochemistry.utoronto.ca/files/lipidCombinationRules.pdf>`_
@@ -59,7 +59,7 @@ External material
 * `Lipidbook <https://www.lipidbook.org/>`_ is a public repository for force-field parameters of lipids,
   detergents and other molecules that are used in
   the simulation of membranes and membrane proteins. It is described in: J. Domański, P. Stansfeld, M.S.P. Sansom,
-  and O. Beckstein. J. Membrane Biol. 236 (2010), 255—258. `doi:10.1007/s00232-010-9296-8 <http://dx.doi.org/10.1007/s00232-010-9296-8>`_.
+  and O. Beckstein. J. Membrane Biol. 236 (2010), 255—258. `doi:10.1007/s00232-010-9296-8 <https://doi.org/10.1007/s00232-010-9296-8>`_.
 
 
 Parameterization of novel molecules
@@ -85,7 +85,7 @@ It would be wise to have a reasonable amount of simulation experience with |Grom
 attempting to parametrize new force fields, or new molecules for existing force fields.
 These are expert topics, and not suitable for giving to (say) undergraduate students for
 a research project, unless you like expensive quasi-random number generators. A very thorough knowledge
-of :ref:`Chapter 5 <ff>` of the |Gromacs| Reference Manual will be required. If you haven't been warned
+of :ref:`Chapter 5: Interaction function and force fields <ff>` of the |Gromacs| Reference Manual will be required. If you haven't been warned
 strongly enough, please read below about parametrization for exotic species.
 
 Another bit of advice: Don't be more haphazard in obtaining parameters than you would be buying
@@ -141,7 +141,7 @@ sampling, which allows for sampling of statistically-improbable states, are:
 * Use :ref:`gmx wham` to make use of the WHAM algorithm to reconstruct a PMF curve.
 
 A more detailed tutorial is linked `here for umbrella
-sampling <http://www.mdtutorials.com/gmx/umbrella/index.html>`__.
+sampling <https://tutorials.gromacs.org/umbrella-sampling.html>`__.
 
 
 Single-Point Energy

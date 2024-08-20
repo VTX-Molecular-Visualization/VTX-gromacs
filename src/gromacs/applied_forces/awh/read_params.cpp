@@ -36,9 +36,19 @@
 
 #include "read_params.h"
 
+#include <cinttypes>
+#include <cmath>
+#include <cstdio>
+
 #include <algorithm>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "gromacs/applied_forces/awh/awh.h"
+#include "gromacs/applied_forces/awh/dimparams.h"
 #include "gromacs/fileio/readinp.h"
 #include "gromacs/fileio/warninp.h"
 #include "gromacs/math/units.h"
@@ -53,9 +63,12 @@
 #include "gromacs/pulling/pull.h"
 #include "gromacs/random/seed.h"
 #include "gromacs/topology/mtop_util.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/iserializer.h"
 #include "gromacs/utility/stringutil.h"
 
@@ -136,7 +149,7 @@ void checkMtsConsistency(const t_inputrec& inputrec, WarningHandler* wi)
                 "When AWH is applied to pull coordinates, pull and AWH should be computed at "
                 "the same MTS level");
     }
-    if (usesFep && awhMtsLevel != ssize(inputrec.mtsLevels) - 1)
+    if (usesFep && awhMtsLevel != gmx::ssize(inputrec.mtsLevels) - 1)
     {
         wi->addError(
                 "When AWH is applied to the free-energy lambda with MTS, AWH should be "
@@ -552,7 +565,14 @@ void checkInputConsistencyAwhBias(const AwhBiasParams& awhBiasParams, WarningHan
         if (awhBiasParams.shareGroup() <= 0 && coverDiameter > 0)
         {
             wi->addWarning(
-                    "The covering diameter is only relevant to set for bias sharing simulations.");
+                    "The AWH covering diameter is only relevant to set for bias sharing "
+                    "simulations.");
+        }
+        if (awhBiasParams.shareGroup() > 0 && coverDiameter == 0)
+        {
+            wi->addWarning(
+                    "When simulations share an AWH bias, it is strongly recommended to use a "
+                    "non-zero covering diameter");
         }
     }
 }
@@ -702,7 +722,7 @@ AwhDimParams::AwhDimParams(std::vector<t_inpfile>* inp, const std::string& prefi
                 "non-optimal for your system!",
                 opt.c_str(),
                 diffusion_default);
-        wi->addWarning(message);
+        wi->addNote(message);
         diffusionValue = diffusion_default;
     }
     diffusion_ = diffusionValue;

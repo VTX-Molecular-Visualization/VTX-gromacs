@@ -34,16 +34,32 @@
 #include "gmxpre.h"
 
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+
+#include <array>
+#include <initializer_list>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "gromacs/math/matrix.h"
+#include "gromacs/math/multidimarray.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/coupling.h"
+#include "gromacs/mdspan/extents.h"
+#include "gromacs/mdspan/layouts.h"
 #include "gromacs/mdtypes/inputrec.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/boxutilities.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/loggerbuilder.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/stringstream.h"
 #include "gromacs/utility/stringutil.h"
 
@@ -135,10 +151,10 @@ const char* enumValueToStringForTestName(const BoxShape enumValue)
 {
     static constexpr gmx::EnumerationArray<BoxShape, const char*> names = {
         "cubic",
-        "rect", // abbreivates "rectilinear"
+        "rect", // abbreviates "rectilinear"
         "rds",  // abbreviates "rhombic dodecahedron XY square"
         "rdh",  // abbreviates "rhombic dodecahedron XY hexagon"
-        "to",   // abbreviaites "truncated octahedron",
+        "to",   // abbreviates "truncated octahedron",
         "other"
     };
     return names[enumValue];

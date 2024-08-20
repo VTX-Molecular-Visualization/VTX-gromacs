@@ -10,7 +10,7 @@
 #ifndef COLVARMODULE_H
 #define COLVARMODULE_H
 
-#include <cmath>
+#include <cstdint>
 
 #include "colvars_version.h"
 
@@ -19,9 +19,11 @@
 #endif
 
 /*! \mainpage Main page
-This is the Developer's documentation for the Collective Variables Module.
+This is the Developer's documentation for the Collective Variables module (Colvars).
 
 You can browse the class hierarchy or the list of source files.
+
+Please note that this documentation is only supported for the master branch, and its features may differ from those in a given release of a simulation package.
  */
 
 /// \file colvarmodule.h
@@ -33,16 +35,15 @@ You can browse the class hierarchy or the list of source files.
 /// shared between all object instances) to be accessed from other
 /// objects.
 
+#include <cmath>
+#include <iosfwd>
 #include <string>
 #include <vector>
-#include <list>
-#include <iosfwd>
 
 class colvarparse;
 class colvar;
 class colvarbias;
 class colvarproxy;
-class colvarscript;
 class colvarvalue;
 
 
@@ -56,14 +57,6 @@ class colvarvalue;
 /// to provide a transparent interface between the MD program and the
 /// child objects
 class colvarmodule {
-
-private:
-
-  /// Impossible to initialize the main object without arguments
-  colvarmodule();
-
-  /// Integer representing the version string (allows comparisons)
-  int version_int;
 
 public:
 
@@ -79,9 +72,23 @@ public:
     return version_int;
   }
 
+  /// Get the patch version number (non-zero in patch releases of other packages)
+  int patch_version_number() const
+  {
+    return patch_version_int;
+  }
+
+private:
+
+  /// Integer representing the version string (allows comparisons)
+  int version_int = 0;
+
+  /// Patch version number (non-zero in patch releases of other packages)
+  int patch_version_int = 2;
+
+public:
+
   friend class colvarproxy;
-  // TODO colvarscript should be unaware of colvarmodule's internals
-  friend class colvarscript;
 
   /// Use a 64-bit integer to store the step number
   typedef long long step_number;
@@ -336,6 +343,13 @@ public:
   /// \param Pointer to instance of the proxy class (communicate with engine)
   colvarmodule(colvarproxy *proxy);
 
+private:
+
+  /// Cannot initialize the main object without a proxy
+  colvarmodule();
+
+public:
+
   /// Destructor
   ~colvarmodule();
 
@@ -449,6 +463,9 @@ public:
 private:
 
   template <typename IST> IST & read_state_template_(IST &is);
+
+  /// Default input state file; if given, it is read unless the MD engine provides it
+  std::string default_input_state_file_;
 
   /// Internal state buffer, to be read as an unformatted stream
   std::vector<unsigned char> input_state_buffer_;

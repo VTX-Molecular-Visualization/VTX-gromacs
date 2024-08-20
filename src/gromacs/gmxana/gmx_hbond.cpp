@@ -35,23 +35,31 @@
 
 #include "config.h"
 
+#include <climits>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <numeric>
+#include <string>
 #include <type_traits>
 #include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/correlationfunctions/autocorr.h"
 #include "gromacs/correlationfunctions/crosscorr.h"
 #include "gromacs/correlationfunctions/expfit.h"
 #include "gromacs/correlationfunctions/integrate.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/matio.h"
+#include "gromacs/fileio/oenv.h"
+#include "gromacs/fileio/rgb.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
@@ -61,23 +69,33 @@
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/inputrec.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/gmxomp.h"
 #include "gromacs/utility/pleasecite.h"
 #include "gromacs/utility/programcontext.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/snprintf.h"
 #include "gromacs/utility/stringutil.h"
+
+struct gmx_output_env_t;
 
 static constexpr int sc_maxHydrogenExchange = 7;
 using HydrogenExchangeData                  = std::array<int, sc_maxHydrogenExchange>;
@@ -203,7 +221,7 @@ struct HydrogenBondData
 HydrogenBondData::HydrogenBondData(bool useHBondMap, bool useDAnr, bool useOneHBond) :
     bHBmap(useHBondMap),
     bDAnr(useDAnr),
-    wordlen(8 * sizeof(unsigned int)),
+    wordlen(CHAR_BIT * sizeof(unsigned int)),
     maxhydro(useOneHBond ? 1 : sc_maxNumHydrogens)
 {
 }
@@ -414,7 +432,7 @@ static int donor_index_function(t_donors* d, int grp, int i, const char* file, i
 
 static gmx_bool isInterchangable(HydrogenBondData* hb, int d, int a, int grpa, int grpd)
 {
-    /* g_hbond doesn't allow overlapping groups */
+    /* gmx hbond doesn't allow overlapping groups */
     if (grpa != grpd)
     {
         return FALSE;
@@ -1111,9 +1129,9 @@ static void dump_grid(FILE* fp, ivec ngrid, const std::vector<std::vector<std::v
             {
                 for (x = 0; x < ngrid[XX]; x++)
                 {
-                    fprintf(fp, "%3zd", grid[x][y][z].d[gr].atoms.size());
+                    fprintf(fp, "%3zu", grid[x][y][z].d[gr].atoms.size());
                     sum[gr] += grid[z][y][x].d[gr].atoms.size();
-                    fprintf(fp, "%3zd", grid[x][y][z].a[gr].atoms.size());
+                    fprintf(fp, "%3zu", grid[x][y][z].a[gr].atoms.size());
                     sum[gr] += grid[z][y][x].a[gr].atoms.size();
                 }
                 fprintf(fp, " | ");
@@ -1121,9 +1139,9 @@ static void dump_grid(FILE* fp, ivec ngrid, const std::vector<std::vector<std::v
                 {
                     for (x = 0; x < ngrid[XX]; x++)
                     {
-                        fprintf(fp, "%3zd", grid[z + 1][y][x].d[gr].atoms.size());
+                        fprintf(fp, "%3zu", grid[z + 1][y][x].d[gr].atoms.size());
                         sum[gr] += grid[z + 1][y][x].d[gr].atoms.size();
-                        fprintf(fp, "%3zd", grid[z + 1][y][x].a[gr].atoms.size());
+                        fprintf(fp, "%3zu", grid[z + 1][y][x].a[gr].atoms.size());
                         sum[gr] += grid[z + 1][y][x].a[gr].atoms.size();
                     }
                 }
@@ -2542,6 +2560,10 @@ int gmx_hbond(int argc, char* argv[])
         sfree(ppa);
         return 0;
     }
+
+    std::fprintf(
+            stdout,
+            "You are going to use a deprecated gmx tool. Please migrate to the new one, gmx hbond");
 
     if (bMerge && !bDA)
     {

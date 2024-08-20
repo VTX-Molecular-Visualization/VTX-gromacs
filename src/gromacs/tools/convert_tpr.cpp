@@ -36,8 +36,16 @@
 #include "convert_tpr.h"
 
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 
+#include <array>
+#include <filesystem>
 #include <limits>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "gromacs/commandline/cmdlineoptionsmodule.h"
 #include "gromacs/fileio/checkpoint.h"
@@ -45,26 +53,39 @@
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trrio.h"
 #include "gromacs/gmxpreprocess/gen_maxwell_velocities.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/math/vec.h"
+#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/options/ioptionscontainer.h"
+#include "gromacs/options/optionfiletype.h"
 #include "gromacs/random/seed.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+
+namespace gmx
+{
+class CommandLineModuleSettings;
+} // namespace gmx
 
 static void rangeCheck(int numberInIndexFile, int maxAtomNumber)
 {
@@ -231,7 +252,7 @@ static void reduce_ilist(gmx::ArrayRef<const int> invindex,
     }
 }
 
-static void reduce_topology_x(int gnx, int index[], gmx_mtop_t* mtop, rvec x[], rvec v[])
+static void reduce_topology_x(int gnx, int index[], gmx_mtop_t* mtop, t_state* state)
 {
     gmx_localtop_t top(mtop->ffparams);
     gmx_mtop_generate_local_top(*mtop, &top, false);
@@ -240,8 +261,11 @@ static void reduce_topology_x(int gnx, int index[], gmx_mtop_t* mtop, rvec x[], 
     const std::vector<bool> bKeep    = bKeepIt(gnx, atoms.nr, index);
     const std::vector<int>  invindex = invind(gnx, atoms.nr, index);
 
-    reduce_rvec(gnx, index, x);
-    reduce_rvec(gnx, index, v);
+    reduce_rvec(gnx, index, state->x.rvec_array());
+    if (state->flags() & enumValueToBitMask(StateEntry::V))
+    {
+        reduce_rvec(gnx, index, state->v.rvec_array());
+    }
     reduce_atom(gnx, index, atoms.atom, atoms.atomname, &(atoms.nres), atoms.resinfo);
 
     for (int i = 0; (i < F_NRE); i++)
@@ -421,7 +445,7 @@ int ConvertTpr::run()
 
     t_inputrec  irInstance;
     t_inputrec* ir = &irInstance;
-    read_tpx_state(inputTprFileName_.c_str(), ir, &state, &mtop);
+    read_tpx_state(inputTprFileName_, ir, &state, &mtop);
 
     if (generateVelocities_)
     {
@@ -434,6 +458,15 @@ int ConvertTpr::run()
         {
             velocitySeed_ = static_cast<int>(gmx::makeRandomSeed());
             printf("Using random seed %d for generating velocities", velocitySeed_);
+        }
+        if (!(state.flags() & enumValueToBitMask(StateEntry::V)))
+        {
+            gmx_fatal(FARGS,
+                      "Input tpr file %s does not contain velocities, typically because this file "
+                      "is intended for energy minimization ('steep' integrator). This is not a "
+                      "supported use case of the 'generate_velocities' option of convert-tpr: use "
+                      "the mdp option 'gen_vel' instead",
+                      inputTprFileName_.c_str());
         }
         // Since there is no log in convert-tpr, we generate-and-print the seed here
         maxwell_speed(velocityTemperature_, velocitySeed_, &mtop, state.v.rvec_array(), MDLogger());
@@ -521,7 +554,7 @@ int ConvertTpr::run()
                     "atoms\n",
                     grpname,
                     gnx);
-            reduce_topology_x(gnx, index, &mtop, state.x.rvec_array(), state.v.rvec_array());
+            reduce_topology_x(gnx, index, &mtop, &state);
             state.changeNumAtoms(gnx);
         }
         else

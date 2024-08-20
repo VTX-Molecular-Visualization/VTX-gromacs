@@ -129,12 +129,21 @@ _rocm_extra_packages = [
     #             apt_keys=['http://repo.radeon.com/rocm/rocm.gpg.key'],
     #             apt_repositories=['deb [arch=amd64] http://repo.radeon.com/rocm/apt/X.Y.Z/ ubuntu main']
     "clinfo",
-    "hipfft",
     "libelf1",
+]
+
+_rocm_version_dependent_packages = [
+    # The following require
+    #             apt_keys=['http://repo.radeon.com/rocm/rocm.gpg.key'],
+    #             apt_repositories=['deb [arch=amd64] http://repo.radeon.com/rocm/apt/X.Y.Z/ ubuntu main']
+    "hipfft",
+    "hipfft-dev",
     "rocfft",
     "rocfft-dev",
-    "rocm-opencl",
+    "rocprim",
+    "rocprim-dev",
     "rocm-dev",
+    "rocm-opencl",
 ]
 
 # Extra packages required to build CP2K
@@ -268,6 +277,7 @@ def hpccm_distro_name(args) -> str:
             raise RuntimeError("Logic error: unsupported CentOS distribution selected.")
     elif args.ubuntu is not None:
         name_mapping = {
+            "24.04": "ubuntu24",
             "22.04": "ubuntu22",
             "20.04": "ubuntu20",
             "18.04": "ubuntu18",
@@ -291,7 +301,7 @@ def get_llvm_packages(args) -> typing.Iterable[str]:
             "clang-format-" + str(args.llvm),
             "clang-tidy-" + str(args.llvm),
         ]
-        if args.hipsycl is not None:
+        if args.adaptivecpp is not None:
             packages += [
                 f"llvm-{args.llvm}-dev",
                 f"libclang-{args.llvm}-dev",
@@ -314,7 +324,23 @@ def get_rocm_packages(args) -> typing.List[str]:
     if args.rocm is None:
         return []
     else:
-        return _rocm_extra_packages
+        packages = _rocm_extra_packages
+        packages.extend(get_rocm_version_dependent_packages(args))
+        return packages
+
+
+def get_rocm_version_dependent_packages(args) -> typing.List[str]:
+    packages = []
+    rocm_version = args.rocm
+    rocm_version_parsed = [int(i) for i in rocm_version.split(".")]
+    # if the version does not contain the final patch version, add it manually to make sure that
+    # we can install the packages
+    if len(rocm_version_parsed) < 3:
+        rocm_version = rocm_version + ".0"
+    for entry in _rocm_version_dependent_packages:
+        packages.append(entry + rocm_version)
+
+    return packages
 
 
 def get_rocm_repository(args) -> "hpccm.building_blocks.base":
@@ -325,7 +351,9 @@ def get_rocm_repository(args) -> "hpccm.building_blocks.base":
         if rocm_version[0] < 5 or (rocm_version[0] == 5 and rocm_version[1] < 3):
             dist_string = "ubuntu"
         else:
-            dist_string = {"20.04": "focal", "22.04": "jammy"}[args.ubuntu]
+            dist_string = {"20.04": "focal", "22.04": "jammy", "24.04": "noble"}[
+                args.ubuntu
+            ]
     return hpccm.building_blocks.packages(
         apt_keys=["http://repo.radeon.com/rocm/rocm.gpg.key"],
         apt_repositories=[
@@ -366,12 +394,10 @@ def get_compiler(
             compiler = compiler_build_stage.runtime(_from="oneapi")
             # Prepare the toolchain (needed only for builds done within the Dockerfile, e.g.
             # OpenMPI builds, which don't currently work for other reasons)
-            oneapi_version_major = int(args.oneapi.split(".")[0])
-            if oneapi_version_major < 2023:
-                path = f"/opt/intel/oneapi/compiler/{args.oneapi}/linux/bin/intel64"
-            else:
+            if args.oneapi.startswith("2024.0"):
                 path = f"/opt/intel/oneapi/compiler/{args.oneapi}/linux/bin"
-
+            else:
+                path = f"/opt/intel/oneapi/compiler/{args.oneapi}/bin"
             oneapi_toolchain = hpccm.toolchain(
                 CC=f"{path}/icx",
                 CXX=f"{path}/icpx",
@@ -408,9 +434,9 @@ def get_compiler(
 def get_gdrcopy(args, compiler):
     if args.cuda is not None:
         if hasattr(compiler, "toolchain"):
-            # Version last updated June 7, 2021
+            # Version last updated August 15, 2024
             return hpccm.building_blocks.gdrcopy(
-                toolchain=compiler.toolchain, version="2.2"
+                toolchain=compiler.toolchain, version="2.4.1"
             )
         else:
             raise RuntimeError("compiler is not an HPCCM compiler building block!")
@@ -419,15 +445,23 @@ def get_gdrcopy(args, compiler):
 
 
 def get_ucx(args, compiler, gdrcopy):
-    if args.cuda is not None:
+    if args.cuda is not None or args.rocm is not None:
         if hasattr(compiler, "toolchain"):
             use_gdrcopy = gdrcopy is not None
             # We disable `-Werror`, since there are some unknown pragmas and unused variables which upset clang
             toolchain = copy.copy(compiler.toolchain)
             toolchain.CFLAGS = "-Wno-error"
-            # Version last updated January 24, 2023
+            configure_opts = []
+            if args.rocm is not None:
+                configure_opts.append("--with-rocm=/opt/rocm")
+            if args.cuda is not None:
+                configure_opts.append("--with-cuda=/usr/local/cuda")
+            # Version last updated August 15, 2024
             return hpccm.building_blocks.ucx(
-                toolchain=toolchain, gdrcopy=use_gdrcopy, version="1.13.1", cuda=True
+                toolchain=toolchain,
+                gdrcopy=use_gdrcopy,
+                version="1.17.0",
+                configure_opts=configure_opts,
             )
         else:
             raise RuntimeError("compiler is not an HPCCM compiler building block!")
@@ -467,10 +501,10 @@ def get_mpi(args, compiler, ucx):
                 mpich_stage += hpccm.building_blocks.python(
                     python3=True, python2=False, devel=False
                 )
-                # Version last updated July 15, 2022
+                # Version last updated August 15, 2024
                 mpich_stage += hpccm.building_blocks.mpich(
                     toolchain=compiler.toolchain,
-                    version="4.0.2",
+                    version="4.2.2",
                     cuda=use_cuda,
                     rocm=use_rocm,
                     ucx=use_ucx,
@@ -509,7 +543,10 @@ def get_oneapi_plugins(args):
                 "Need CODEPLAY_API_TOKEN env. variable to install oneAPI plugins"
             )
         backend_version = {"nvidia": args.cuda, "amd": args.rocm}[variant]
-        url = f"https://developer.codeplay.com/api/v1/products/download?product=oneapi&variant={variant}&filters[]=linux&filters[]={backend_version}&aat={token}"
+        if backend_version.count(".") == 2:
+            backend_version = ".".join(backend_version.split(".")[:2])  # 12.0.1 -> 12.0
+        oneapi_version = args.oneapi
+        url = f"https://developer.codeplay.com/api/v1/products/download?product=oneapi&version={oneapi_version}&variant={variant}&filters[]=linux&filters[]={backend_version}&aat={token}"
         outfile = f"/tmp/oneapi_plugin_{variant}.sh"
         blocks.append(
             hpccm.primitives.shell(
@@ -524,6 +561,15 @@ def get_oneapi_plugins(args):
         _add_plugin("nvidia")
     if args.oneapi_plugin_amd:
         _add_plugin("amd")
+        # Need to make ROCm libraries discoverable
+        blocks.append(
+            hpccm.primitives.shell(
+                commands=[
+                    "echo '/opt/rocm/lib/' > /etc/ld.so.conf.d/rocm.conf",
+                    "ldconfig",
+                ]
+            )
+        )
     return blocks
 
 
@@ -573,18 +619,42 @@ def get_nvhpcsdk(args):
         return None
 
 
-def get_hipsycl(args):
-    if args.hipsycl is None:
+def get_adaptivecpp(args):
+    if args.adaptivecpp is None:
         return None
-    if args.llvm is None:
-        raise RuntimeError("Can not build hipSYCL without LLVM")
     if args.rocm is None:
-        raise RuntimeError("hipSYCL requires the ROCm packages")
+        raise RuntimeError("AdaptiveCpp requires the ROCm packages")
+    if args.llvm is None:
+        # We're using ROCm LLVM in this case, which is not compatible with CUDA
+        if args.cuda is not None:
+            raise RuntimeError(
+                "Can not build AdaptiveCpp with CUDA and no upstream LLVM"
+            )
+    preconfigure = []
 
-    cmake_opts = [
-        "-DCMAKE_C_COMPILER=clang-{}".format(args.llvm),
-        "-DCMAKE_CXX_COMPILER=clang++-{}".format(args.llvm),
-        "-DLLVM_DIR=/usr/lib/llvm-{}/cmake/".format(args.llvm),
+    if args.llvm is not None:
+        cmake_opts = [
+            "-DCMAKE_C_COMPILER=clang-{}".format(args.llvm),
+            "-DCMAKE_CXX_COMPILER=clang++-{}".format(args.llvm),
+            "-DLLVM_DIR=/usr/lib/llvm-{}/cmake/".format(args.llvm),
+        ]
+        if int(args.llvm) >= 18:  # and args.adaptivecpp <= 24.06:
+            preconfigure.append(
+                "ln -s /usr/lib/llvm-{0}/lib/libLLVM-{0}.so /usr/lib/llvm-{0}/lib/libLLVM.so".format(
+                    args.llvm
+                )
+            )
+    else:
+        cmake_opts = [
+            "-DCMAKE_C_COMPILER=/opt/rocm/bin/amdclang",
+            "-DCMAKE_CXX_COMPILER=/opt/rocm/bin/amdclang++",
+            "-DLLVM_DIR=/opt/rocm/llvm/lib/cmake/llvm",
+            "-DWITH_SSCP_COMPILER=OFF",
+            "-DWITH_OPENCL_BACKEND=OFF",
+            "-DWITH_LEVEL_ZERO_BACKEND=OFF",
+        ]
+
+    cmake_opts += [
         "-DCMAKE_PREFIX_PATH=/opt/rocm/lib/cmake",
         "-DWITH_ROCM_BACKEND=ON",
     ]
@@ -595,30 +665,20 @@ def get_hipsycl(args):
             "-DWITH_CUDA_BACKEND=ON",
         ]
 
-    postinstall = [
-        # https://github.com/illuhad/hipSYCL/issues/361#issuecomment-718943645
-        'for f in /opt/rocm/amdgcn/bitcode/*.bc; do ln -s "$f" "/opt/rocm/lib/$(basename $f .bc).amdgcn.bc"; done'
-    ]
-    if args.cuda is not None:
-        postinstall += [
-            # https://github.com/illuhad/hipSYCL/issues/410#issuecomment-743301929
-            f"sed s/_OPENMP/__OPENMP_NVPTX__/ -i /usr/lib/llvm-{args.llvm}/lib/clang/*/include/__clang_cuda_complex_builtins.h",
-        ]
-
-    hipsycl_version_opts = {}
-    if "." in args.hipsycl:
-        hipsycl_version_opts["branch"] = "v" + args.hipsycl
+    adaptivecpp_version_opts = {}
+    if "." in args.adaptivecpp:
+        adaptivecpp_version_opts["branch"] = "v" + args.adaptivecpp
     else:
-        hipsycl_version_opts["commit"] = args.hipsycl
+        adaptivecpp_version_opts["commit"] = args.adaptivecpp
 
     return hpccm.building_blocks.generic_cmake(
-        repository="https://github.com/illuhad/hipSYCL.git",
-        directory="/var/tmp/hipSYCL",
+        repository="https://github.com/AdaptiveCpp/AdaptiveCpp.git",
+        directory="/var/tmp/AdaptiveCpp",
         prefix="/usr/local",
         recursive=True,
+        preconfigure=preconfigure,
         cmake_opts=["-DCMAKE_BUILD_TYPE=Release", *cmake_opts],
-        postinstall=postinstall,
-        **hipsycl_version_opts,
+        **adaptivecpp_version_opts,
     )
 
 
@@ -1002,7 +1062,7 @@ def add_python_stages(
         image=base, _distro=hpccm_distro_name(input_args), _as="pyenv"
     )
     python_extra_packages = _python_extra_packages
-    if input_args.ubuntu is not None and input_args.ubuntu == "22.04":
+    if input_args.ubuntu is not None and input_args.ubuntu != "20.04":
         python_extra_packages = [
             i.replace("python-", "python3-") for i in python_extra_packages
         ]
@@ -1119,6 +1179,11 @@ def add_base_stage(
     building_blocks["compiler"] = get_compiler(
         input_args, compiler_build_stage=output_stages.get("compiler_build")
     )
+    if args.rocm is not None:
+        building_blocks["rocm"] = [
+            get_rocm_repository(args),
+            hpccm.building_blocks.packages(ospackages=get_rocm_packages(args)),
+        ]
     building_blocks["gdrcopy"] = get_gdrcopy(input_args, building_blocks["compiler"])
     building_blocks["ucx"] = get_ucx(
         input_args, building_blocks["compiler"], building_blocks["gdrcopy"]
@@ -1177,18 +1242,18 @@ def build_stages(args) -> typing.Iterable["hpccm.Stage"]:
     os_packages = (
         list(get_llvm_packages(args))
         + get_opencl_packages(args)
-        + get_rocm_packages(args)
         + get_cp2k_packages(args)
     )
     if args.doxygen is not None:
         os_packages += _docs_extra_packages
     if args.oneapi is not None:
         os_packages += ["lsb-release"]
-    if args.hipsycl is not None:
+    if args.adaptivecpp is not None:
         os_packages += ["libboost-fiber-dev"]
     building_blocks["extra_packages"] = []
     if args.intel_compute_runtime:
         repo = {
+            "24.04": "deb [arch=amd64] https://repositories.intel.com/graphics/ubuntu noble arc",
             "22.04": "deb [arch=amd64] https://repositories.intel.com/graphics/ubuntu jammy arc",
             "20.04": "deb [arch=amd64] https://repositories.intel.com/graphics/ubuntu focal main",
         }
@@ -1198,10 +1263,7 @@ def build_stages(args) -> typing.Iterable["hpccm.Stage"]:
         )
         os_packages += _intel_compute_runtime_extra_packages
 
-    if args.rocm is not None:
-        building_blocks["extra_packages"] += get_rocm_repository(args)
-
-    if args.ubuntu is not None and args.ubuntu != "22.04":
+    if args.ubuntu is not None and args.ubuntu == "20.04":
         building_blocks["extra_packages"] += hpccm.building_blocks.packages(
             ospackages=os_packages, apt_ppas=["ppa:intel-opencl/intel-opencl"]
         )
@@ -1247,7 +1309,7 @@ def build_stages(args) -> typing.Iterable["hpccm.Stage"]:
             variables={"LD_LIBRARY_PATH": nvshmem_lib_path}
         )
 
-    building_blocks["hipSYCL"] = get_hipsycl(args)
+    building_blocks["AdaptiveCpp"] = get_adaptivecpp(args)
 
     # Add Python environments to MPI images, only, so we don't have to worry
     # about whether to install mpi4py.

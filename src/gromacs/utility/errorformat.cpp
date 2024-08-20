@@ -46,6 +46,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include <string>
+
 #include "gromacs/utility/basenetwork.h"
 #include "gromacs/utility/baseversion.h"
 #include "gromacs/utility/path.h"
@@ -114,7 +116,7 @@ void printFatalErrorFooter(FILE* fp)
     std::fprintf(fp, "\n");
     std::fprintf(fp,
                  "For more information and tips for troubleshooting, please check the GROMACS\n"
-                 "website at http://www.gromacs.org/Documentation/Errors");
+                 "website at https://manual.gromacs.org/current/user-guide/run-time-errors.html");
     std::fprintf(fp, "\n-------------------------------------------------------\n");
 }
 
