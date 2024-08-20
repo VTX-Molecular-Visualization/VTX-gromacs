@@ -10,7 +10,7 @@ class VtxGromacsRecipe(ConanFile):
     version = "2024.0"
     package_type = "library"
     revision_mode = "scm"
-    
+
     settings = "os", "compiler", "build_type", "arch"
     options = {
         "shared": [True, False]
@@ -20,21 +20,21 @@ class VtxGromacsRecipe(ConanFile):
         "shared": False
         , "fPIC": True
     }
-    
+
     generators = "CMakeDeps", "CMakeToolchain"
-    
+
     exports_sources = "CMakeLists.txt", "src/*", "cmake/*", "share/*", "tests/*", "api/*", "COPYING", "AUTHORS", "CITATION.cff", "docs/*", "scripts/*", "admin/*"
-        
+
     def config_options(self):
         if self.settings.os == "Windows":
             del self.options.fPIC
 
     def layout(self):
         cmake_layout(self)
-    
+
     def build_requirements(self):
         self.tool_requires("cmake/3.27.0")
-        
+
     def build(self):
         cmake = CMake(self)
         cmake.configure(cli_args=[
@@ -44,7 +44,7 @@ class VtxGromacsRecipe(ConanFile):
             , "-DGMX_BUILD_SHARED_EXE=OFF"
         ]) # build with slow fft algorithm. Since we won't use mdrun, it doesn't really matter
         cmake.build()
-        
+
     def package(self):
         copy(self, pattern="*.dll", src=os.path.join(self.build_folder, "bin"), dst=os.path.join(self.package_folder, "external", "tools", "mdprep", "gromacs"))
         copy(self, pattern="*.exe", src=os.path.join(self.build_folder, "bin"), dst=os.path.join(self.package_folder, "external", "tools", "mdprep", "gromacs"))
@@ -54,7 +54,7 @@ class VtxGromacsRecipe(ConanFile):
 
     def package_info(self):
         self.cpp_info.includedirs = ['include', os.path.join('api', 'legacy', 'include') ]
-        
-        
-        
-        
+
+
+
+
