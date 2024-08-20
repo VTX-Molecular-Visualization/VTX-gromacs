@@ -532,11 +532,13 @@ public:
 
     /*! \brief Updates sharedCorrelationTensorTimeIntegral_ for all points.
      *
-     * \param[in] biasParams       The bias parameters.
-     * \param[in] forceCorrelation The force correlation grid.
+     * \param[in] biasParams          The bias parameters.
+     * \param[in] forceCorrelation    The force correlation grid.
+     * \param[in] shareAcrossAllRanks Share the data across all ranks? Otherwise only the main ranks.
      */
     void updateSharedCorrelationTensorTimeIntegral(const BiasParams&      biasParams,
-                                                   const CorrelationGrid& forceCorrelation);
+                                                   const CorrelationGrid& forceCorrelation,
+                                                   bool                   shareAcrossAllRanks);
 
     /*! \brief Gets the time integral, shared across all ranks, of a tensor of a correlation grid point.
      *
@@ -573,7 +575,8 @@ private:
     const BiasSharing* biasSharing_;
 
     /* Correlation tensor time integral, for all points, shared across all ranks (weighted based on
-     * the local weight contribution). The structure is [points][correlationTensorIndex] */
+     * the local weight contribution). The structure is [points][correlationTensorIndex].
+     * This is only updated on the main MPI ranks.*/
     std::vector<std::vector<double>> sharedCorrelationTensorTimeIntegral_;
 };
 

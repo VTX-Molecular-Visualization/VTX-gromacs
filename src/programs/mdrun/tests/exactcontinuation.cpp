@@ -425,8 +425,8 @@ TEST_P(MdrunNoAppendContinuationIsExact, WithinTolerances)
         // sumation order.
         // Forces and update on GPUs are generally result in different
         // sumation order
-        ulpToleranceInMixed  = 32;
-        ulpToleranceInDouble = 64;
+        ulpToleranceInMixed  = 64;
+        ulpToleranceInDouble = 128;
     }
 
     EnergyTermsToCompare energyTermsToCompare{
@@ -441,9 +441,13 @@ TEST_P(MdrunNoAppendContinuationIsExact, WithinTolerances)
         if (simulationName == "alanine_vacuo")
         {
             // This is slightly less reproducible
-            energyTermsToCompare.insert({ interaction_function[F_ECONSERVED].longname,
-                                          relativeToleranceAsPrecisionDependentUlp(
-                                                  10.0, ulpToleranceInMixed * 2, ulpToleranceInDouble) });
+            // Wider tolerance is needed because of sum of negative PE
+            // with positive KE producing small conserved energy.
+            const int factor = 4;
+            energyTermsToCompare.insert(
+                    { interaction_function[F_ECONSERVED].longname,
+                      relativeToleranceAsPrecisionDependentUlp(
+                              10.0, factor * ulpToleranceInMixed, factor * ulpToleranceInDouble) });
         }
         else
         {

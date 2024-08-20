@@ -462,7 +462,7 @@ function(gmx_warn_on_everything target)
     # versions of any such compiler changes how the warnings
     # look/work.
 
-    # We have no intention of C++98 compability
+    # We have no intention of C++98 compatibility
     gmx_target_warning_suppression(${target} "-Wno-c++98-compat" HAS_WARNING_NO_CPLUSPLUS98_COMPAT)
     gmx_target_warning_suppression(${target} "-Wno-c++98-compat-pedantic" HAS_WARNING_NO_CPLUSPLUS98_COMPAT_PEDANTIC)
 
@@ -485,6 +485,9 @@ function(gmx_warn_on_everything target)
     # Default statement for enum is OK.
     # It's OK to not have branches for Count members of enum classes
     gmx_target_warning_suppression(${target} "-Wno-switch-enum" HAS_WARNING_NO_SWITCH_ENUM)
+
+    # Sometimes it's ok to not have a default: switch statement
+    gmx_target_warning_suppression(${target} "-Wno-switch-default" HAS_WARNING_NO_SWITCH_DEFAULT)
 
     # We need to use macros like
     # GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR and

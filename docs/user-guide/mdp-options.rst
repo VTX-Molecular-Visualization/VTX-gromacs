@@ -2069,8 +2069,10 @@ AWH adaptive biasing
 .. mdp:: awh1-error-init
 
    (10.0) [kJ mol\ :sup:`-1`]
-   Estimated initial average error of the PMF for this bias. This value together with the
-   given diffusion constant(s) :mdp:`awh1-dim1-diffusion` determine the initial biasing rate.
+   Estimated initial average error of the PMF for this bias. This value together with an
+   estimate of the crossing time, based on the length of the sampling interval and the
+   given diffusion constant(s) :mdp:`awh1-dim1-diffusion`, determine the initial biasing rate.
+   With multiple dimensions, the longest crossing time is used.
    The error is obviously not known *a priori*. Only a rough estimate of :mdp:`awh1-error-init`
    is needed however.
    As a  general guideline, leave :mdp:`awh1-error-init` to its default value when starting a new
@@ -3265,7 +3267,7 @@ Mixed quantum/classical molecular dynamics
 
 .. mdp:: QMMM-grps
 
-   groups to be descibed at the QM level for MiMiC QM/MM
+   groups to be described at the QM level for MiMiC QM/MM
 
 .. MDP:: QMMM
 
@@ -3575,7 +3577,7 @@ Collective variables (Colvars) module
 These options enable and control the features provided by the collective
 variables (Colvars) module (`link <https://colvars.github.io/>`_), a software
 library for enhanced sampling methods in molecular simulations.  The Colvars
-module is described in ref. \ :ref:`192 <refFiorin13>` as well as other
+module is described in ref. \ :ref:`195 <refFiorin13>` as well as other
 references that are reported in the log file when the corresponding features
 are used.
 For further details about Colvars interface implementation follow :ref:`colvars`.
@@ -3588,12 +3590,12 @@ For further details about Colvars interface implementation follow :ref:`colvars`
 
 .. mdp:: colvars-configfile
 
-   (colvars.dat) Name of the Colvars configuration file, using options
+   Name of the Colvars configuration file, using options
    specific to Colvars that are documented at:
    `https://colvars.github.io/gromacs-2024/colvars-refman-gromacs.html
    <https://colvars.github.io/gromacs-2024/colvars-refman-gromacs.html>`_.
    The file name can be either an absolute path, or a path relative to the
-   folder from which :ref:`gmx mdrun` is called.
+   working directory when :ref:`gmx grompp` is called.
 
 .. mdp:: colvars-seed
 

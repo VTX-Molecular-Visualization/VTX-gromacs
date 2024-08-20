@@ -117,16 +117,19 @@ static KernelSetup pick_nbnxn_kernel_cpu(const t_inputrec gmx_unused& inputrec,
         kernelSetup.kernelType         = KernelType::Cpu4x4_PlainC;
         kernelSetup.ewaldExclusionType = EwaldExclusionType::Table;
     }
+    else if (sc_haveNbnxmSimd4xmKernels && !sc_haveNbnxmSimd2xmmKernels)
+    {
+        kernelSetup.kernelType = KernelType::Cpu4xN_Simd_4xN;
+    }
+    else if (!sc_haveNbnxmSimd4xmKernels && sc_haveNbnxmSimd2xmmKernels)
+    {
+        kernelSetup.kernelType = KernelType::Cpu4xN_Simd_2xNN;
+    }
     else
     {
-#ifdef GMX_NBNXN_SIMD_4XN
-        kernelSetup.kernelType = KernelType::Cpu4xN_Simd_4xN;
-#endif
-#ifdef GMX_NBNXN_SIMD_2XNN
-        kernelSetup.kernelType = KernelType::Cpu4xN_Simd_2xNN;
-#endif
+        GMX_RELEASE_ASSERT(sc_haveNbnxmSimd4xmKernels && sc_haveNbnxmSimd2xmmKernels,
+                           "Here both 4xM and 2xMM SIMD kernels should be supported");
 
-#if defined GMX_NBNXN_SIMD_2XNN && defined GMX_NBNXN_SIMD_4XN
         /* We need to choose if we want 2x(N+N) or 4xN kernels.
          * This is based on the SIMD acceleration choice and CPU information
          * detected at runtime.
@@ -158,30 +161,38 @@ static KernelSetup pick_nbnxn_kernel_cpu(const t_inputrec gmx_unused& inputrec,
             /* One 256-bit FMA per cycle makes 2xNN faster */
             kernelSetup.kernelType = KernelType::Cpu4xN_Simd_2xNN;
         }
-#endif /* GMX_NBNXN_SIMD_2XNN && GMX_NBNXN_SIMD_4XN */
+    }
 
-
-        if (getenv("GMX_NBNXN_SIMD_4XN") != nullptr)
+    if (getenv("GMX_NBNXN_SIMD_4XN") != nullptr)
+    {
+        if (sc_haveNbnxmSimd4xmKernels)
         {
-#ifdef GMX_NBNXN_SIMD_4XN
             kernelSetup.kernelType = KernelType::Cpu4xN_Simd_4xN;
-#else
+        }
+        else
+        {
             gmx_fatal(FARGS,
                       "SIMD 4xN kernels requested, but GROMACS has been compiled without support "
                       "for these kernels");
-#endif
         }
-        if (getenv("GMX_NBNXN_SIMD_2XNN") != nullptr)
+    }
+    if (getenv("GMX_NBNXN_SIMD_2XNN") != nullptr)
+    {
+        if (sc_haveNbnxmSimd2xmmKernels)
         {
-#ifdef GMX_NBNXN_SIMD_2XNN
             kernelSetup.kernelType = KernelType::Cpu4xN_Simd_2xNN;
-#else
+        }
+        else
+        {
             gmx_fatal(FARGS,
                       "SIMD 2x(N+N) kernels requested, but GROMACS has been compiled without "
                       "support for these kernels");
-#endif
         }
+    }
 
+    if (kernelSetup.kernelType == KernelType::Cpu4xN_Simd_2xNN
+        || kernelSetup.kernelType == KernelType::Cpu4xN_Simd_4xN)
+    {
         /* Analytical Ewald exclusion correction is only an option in
          * the SIMD kernel.
          * Since table lookup's don't parallelize with SIMD, analytical
@@ -220,16 +231,11 @@ const char* lookup_kernel_name(const KernelType kernelType)
     switch (kernelType)
     {
         case KernelType::NotSet: return "not set";
-        case KernelType::Cpu4x4_PlainC: return "plain C";
-        case KernelType::Cpu4xN_Simd_4xN:
-        case KernelType::Cpu4xN_Simd_2xNN:
-#if GMX_SIMD
-            return "SIMD";
-#else  // GMX_SIMD
-            return "not available";
-#endif // GMX_SIMD
+        case KernelType::Cpu4x4_PlainC: return "plain-C";
+        case KernelType::Cpu4xN_Simd_4xN: return "SIMD4xM";
+        case KernelType::Cpu4xN_Simd_2xNN: return "SIMD2xMM";
         case KernelType::Gpu8x8x8: return "GPU";
-        case KernelType::Cpu8x8x8_PlainC: return "plain C";
+        case KernelType::Cpu8x8x8_PlainC: return "plain-C";
 
         default: gmx_fatal(FARGS, "Illegal kernel type selected");
     }

@@ -176,7 +176,8 @@ if (GMX_GPU_CUDA)
     # Work around FindCUDA that prevents using target_link_libraries()
     # with keywords otherwise...
     set(CUDA_LIBRARIES PRIVATE ${CUDA_LIBRARIES})
-    if (NOT GMX_CLANG_CUDA)
+
+    if (NOT GMX_CLANG_CUDA AND NOT GMX_NVSHMEM)
         gmx_cuda_add_library(libgromacs ${LIBGROMACS_SOURCES})
     else()
         add_library(libgromacs ${LIBGROMACS_SOURCES})
@@ -197,6 +198,8 @@ if (GMX_GPU_CUDA)
         target_link_options(libgromacs PRIVATE $<DEVICE_LINK:-fvisibility=hidden>)
         set_target_properties(libgromacs PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
         target_link_libraries(libgromacs PRIVATE nvshmem_host_lib nvshmem_device_lib)
+        # NVSHMEM only supports SM 60+ so we make use of filtered GMX_NVSHMEM_LINK_ARCHS
+        set_target_properties(libgromacs PROPERTIES CUDA_ARCHITECTURES "${GMX_NVSHMEM_LINK_ARCHS}")
     endif()
     if (GMX_USE_cuFFTMp OR GMX_NVSHMEM)
         # We need to PUBLIC link to the stub libraries nvml/cuda to WAR an issue
@@ -207,7 +210,7 @@ if (GMX_GPU_CUDA)
         # version which is not present on the system where driver is not installed.
         # At some future release cmake will provide a workaround for this under the hood at which
         # point we can use PRIVATE linking for these libs until then we stick with PUBLIC linking.
-        target_link_libraries(libgromacs PUBLIC cuda nvidia-ml)
+        target_link_libraries(libgromacs PUBLIC ${GMX_CUDA_DRV_LIB} ${GMX_NVIDIA_ML_LIB})
     endif()
 else()
     add_library(libgromacs ${LIBGROMACS_SOURCES})
@@ -437,7 +440,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
    target_compile_options(libgromacs PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/analyze /analyze:stacksize 70000
      #Control flow warnings are disabled because the commond line output is insufficient. There is no tool
      #to convert the xml report to e.g. HTML and even in Visual Studio the viewer doesn't work with cmake support.
-     /wd6001  #unitialized memory
+     /wd6001  #uninitialized memory
      /wd6011  #derefencing NULL
      /wd6053  #prior call not zero-terminate
      /wd6054  #might not be zero-terminated
@@ -450,7 +453,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
      /wd6240  #(<expr> && <non-zero>)
      /wd6294  #Ill-defined for-loop
      /wd6326  #comparison of constant with other constant
-     /wd28020 #expression involving paramter is not true
+     /wd28020 #expression involving parameter is not true
      # Misc
      /wd6330  #incorrect type to function (warns for char (instead of unsigned) for isspace/isalpha/isdigit/..))
      /wd6993  #OpenMP ignored

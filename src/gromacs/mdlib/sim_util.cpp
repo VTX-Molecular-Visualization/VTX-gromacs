@@ -748,7 +748,7 @@ static void launchPmeGpuFftAndGather(gmx_pme_t*               pmedata,
 {
     wallcycle_start_nocount(wcycle, WallCycleCounter::PmeGpuMesh);
     pme_gpu_launch_complex_transforms(pmedata, wcycle, stepWork);
-    pme_gpu_launch_gather(pmedata, wcycle, lambdaQ);
+    pme_gpu_launch_gather(pmedata, wcycle, lambdaQ, stepWork.computeVirial);
     wallcycle_stop(wcycle, WallCycleCounter::PmeGpuMesh);
 }
 
@@ -1183,14 +1183,11 @@ static void setupLocalGpuForceReduction(const gmx::MdrunScheduleWorkload& runSch
     {
         pmeForcePtr = pmePpCommGpu->getGpuForceStagingPtr();
         GMX_ASSERT(pmeForcePtr, "PME force for reduction has no data");
-        if (pmeForcePtr)
+        if (GMX_THREAD_MPI)
         {
-            if (GMX_THREAD_MPI)
-            {
-                pmeSynchronizer = pmePpCommGpu->getForcesReadySynchronizer();
-            }
-            havePmeContribution = true;
+            pmeSynchronizer = pmePpCommGpu->getForcesReadySynchronizer();
         }
+        havePmeContribution = true;
     }
 
     if (havePmeContribution)

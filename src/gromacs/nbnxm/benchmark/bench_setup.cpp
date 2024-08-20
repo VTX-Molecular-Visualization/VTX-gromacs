@@ -90,10 +90,10 @@ static std::optional<std::string> checkKernelSetup(const KernelBenchOptions& opt
 
     // Check SIMD support
     if ((options.nbnxmSimd != BenchMarkKernels::SimdNo && !GMX_SIMD)
-#ifndef GMX_NBNXN_SIMD_4XN
+#if !GMX_HAVE_NBNXM_SIMD_4XM
         || options.nbnxmSimd == BenchMarkKernels::Simd4XM
 #endif
-#ifndef GMX_NBNXN_SIMD_2XNN
+#if !GMX_HAVE_NBNXM_SIMD_2XMM
         || options.nbnxmSimd == BenchMarkKernels::Simd2XMM
 #endif
     )
@@ -180,8 +180,9 @@ static std::unique_ptr<nonbonded_verlet_t> setupNbnxmForBenchInstance(const Kern
     const auto pinPolicy  = (options.useGpu ? gmx::PinningPolicy::PinnedIfSupported
                                             : gmx::PinningPolicy::CannotBePinned);
     const int  numThreads = options.numThreads;
-    // Note: the options and Nbnxm combination rule enums values should match
-    const int combinationRule = static_cast<int>(options.ljCombinationRule);
+    // Note: the options and Nbnxm combination rule enums values should match,
+    //       the Nbnxm enum has "detect" as first entry, so we need to add 1
+    const int combinationRule = 1 + static_cast<int>(options.ljCombinationRule);
 
     auto messageWhenInvalid = checkKernelSetup(options);
     if (messageWhenInvalid)
@@ -257,12 +258,12 @@ static void expandSimdOptionAndPushBack(const KernelBenchOptions&        options
     if (options.nbnxmSimd == BenchMarkKernels::SimdAuto)
     {
         bool addedInstance = false;
-#ifdef GMX_NBNXN_SIMD_4XN
+#if GMX_HAVE_NBNXM_SIMD_4XM
         optionsList->push_back(options);
         optionsList->back().nbnxmSimd = BenchMarkKernels::Simd4XM;
         addedInstance                 = true;
 #endif
-#ifdef GMX_NBNXN_SIMD_2XNN
+#if GMX_HAVE_NBNXM_SIMD_2XMM
         optionsList->push_back(options);
         optionsList->back().nbnxmSimd = BenchMarkKernels::Simd2XMM;
         addedInstance                 = true;

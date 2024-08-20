@@ -176,7 +176,7 @@ public:
         params_                          = std::make_unique<AwhTestParameters>(getAwhTestParameters(
                 AwhHistogramGrowthType::Linear, AwhPotentialType::Convolved, awhDimParameters, true, 1.0, false, 0.5, 0));
         const AwhParams&       awhParams = params_->awhParams;
-        const AwhBiasParams&   awhBiasParams = awhParams.awhBiasParams()[0];
+        const AwhBiasParams&   awhBiasParams = awhParams.awhBiasParams(0);
         std::vector<DimParams> dimParams;
         dimParams.push_back(DimParams::pullDimParams(1.0, 15.0, params_->beta));
         dimParams.push_back(DimParams::pullDimParams(1.0, 15.0, params_->beta));
@@ -185,7 +185,7 @@ public:
         gridIndexToDataIndex_ = std::vector<int>(grid_->numPoints());
 
         // Here we read the input file
-        filename_ = gmx::test::TestFileManager::getInputFilePath(GetParam()).u8string();
+        filename_ = gmx::test::TestFileManager::getInputFilePath(GetParam());
 
         data_       = readXvgData(filename_);
         numColumns_ = data_.extent(0);

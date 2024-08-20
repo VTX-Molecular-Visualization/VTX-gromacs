@@ -49,7 +49,6 @@
 #include "gromacs/mdlib/rf_util.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/interaction_const.h"
-#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/nbnxm/atomdata.h"
 #include "gromacs/nbnxm/gpu_data_mgmt.h"
@@ -354,7 +353,7 @@ std::unique_ptr<nonbonded_verlet_t> createNbnxmGPU(const size_t               nu
     auto nbv = std::make_unique<nonbonded_verlet_t>(
             std::move(pairlistSets), std::move(pairSearch), std::move(atomData), kernelSetup, nbnxmGpu);
 
-    // Some paramters must be copied to NbnxmGpu to have a fully constructed nonbonded_verlet_t
+    // Some parameters must be copied to NbnxmGpu to have a fully constructed nonbonded_verlet_t
     Nbnxm::gpu_init_atomdata(nbv->gpuNbv(), &nbv->nbat());
 
     return nbv;
