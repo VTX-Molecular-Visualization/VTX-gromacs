@@ -277,6 +277,12 @@ void check_ir(const char*                    mdparin,
     {
         wi->addError("rvdw should be >= 0");
     }
+    if (ir->cutoff_scheme == CutoffScheme::Verlet && ir->rcoulomb == 0 && ir->rvdw == 0)
+    {
+        wi->addError(
+                "At least one cutoff radius (rcoulomb or rvdw) should be > 0 when using the Verlet "
+                "cutoff scheme");
+    }
     if (ir->rlist < 0 && !(ir->cutoff_scheme == CutoffScheme::Verlet && ir->verletbuf_tol > 0))
     {
         wi->addError("rlist should be >= 0");
@@ -1374,7 +1380,7 @@ void check_ir(const char*                    mdparin,
                 ir->nstcomm,
                 enumValueToString(ir->etc));
         CHECK(ir->nstcomm > 1 && (ir->etc == TemperatureCoupling::Andersen));
-        if (opts->nshake != 0)
+        if (opts->nshake != 0 && ir->etc == TemperatureCoupling::Andersen)
         {
             auto message = gmx::formatString(
                     "%s temperature control does not work with constraints. "

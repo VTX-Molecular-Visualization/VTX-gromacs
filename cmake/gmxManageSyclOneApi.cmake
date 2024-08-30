@@ -50,7 +50,10 @@ if(WIN32)
         # and -fsycl both appear before -link. Not possible to change order from cmake script. cmake fix is WIP.
     endif()
 endif()
-if(CMAKE_CXX_COMPILER MATCHES "dpcpp")
+
+# Prohibit the dpcpp compiler, but don't prohibit the use of e.g.
+# /opt/dpcpp/oneapi/....../icpx etc.
+if(CMAKE_CXX_COMPILER MATCHES "dpcpp$")
     message(FATAL_ERROR "Intel's \"dpcpp\" compiler is not supported; please use \"icpx\" for SYCL builds")
 endif()
 
@@ -119,6 +122,16 @@ gmx_check_compiler_flag(
 )
 if (HAVE_W_NO_INCORRECT_SUB_GROUP_SIZE_RESULT)
     set(SYCL_TOOLCHAIN_CXX_FLAGS "${SYCL_TOOLCHAIN_CXX_FLAGS} -Wno-incorrect-sub-group-size")
+endif()
+
+# Force small GRF size on PVC, see #5105
+gmx_check_compiler_flag(
+    "-ftarget-register-alloc-mode=pvc:small"
+    "CXX"
+    HAVE_TARGET_REGISTER_ALLOC_MODE_FLAG
+)
+if (HAVE_TARGET_REGISTER_ALLOC_MODE_FLAG)
+    set(SYCL_TOOLCHAIN_LINKER_FLAGS "${SYCL_TOOLCHAIN_LINKER_FLAGS} -ftarget-register-alloc-mode=pvc:small")
 endif()
 
 if("${SYCL_CXX_FLAGS_EXTRA}" MATCHES "fsycl-targets=.*(nvptx64|amdgcn|amd_gpu|nvidia_gpu)")

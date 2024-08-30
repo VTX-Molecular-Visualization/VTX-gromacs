@@ -226,10 +226,11 @@ static inline void init_plist(gpu_plist* pl)
 {
     /* initialize to nullptr pointers to data that is not allocated here and will
        need reallocation in nbnxn_gpu_init_pairlist */
-    pl->sci      = nullptr;
-    pl->cjPacked = nullptr;
-    pl->imask    = nullptr;
-    pl->excl     = nullptr;
+    pl->sci                  = nullptr;
+    pl->cjPacked             = nullptr;
+    pl->imask                = nullptr;
+    pl->excl                 = nullptr;
+    pl->d_rollingPruningPart = nullptr;
 
     /* size -1 indicates that the respective array hasn't been initialized yet */
     pl->na_c                   = -1;
@@ -711,6 +712,9 @@ void gpu_init_atomdata(NbnxmGpu* nb, const nbnxn_atomdata_t* nbat)
         /* free up first if the arrays have already been initialized */
         if (atdat->numAtomsAlloc != -1)
         {
+            // Wait for the force-buffer clearing from the previous step
+            localStream.synchronize();
+
             freeDeviceBuffer(&atdat->f);
             freeDeviceBuffer(&atdat->xq);
             if (useLjCombRule(nb->nbparam->vdwType))

@@ -79,7 +79,7 @@ endif()
 
 # The GROMACS convention is that these are the version number of the next
 # release that is going to be made from this branch.
-project(Gromacs VERSION 2024.1)
+project(Gromacs VERSION 2024.3)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,6 +91,10 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+include(gmxTestIntelLLVM)
+# Run through a number of tests for buggy compilers and other issues
+include(gmxTestCompilerProblems)
+gmx_test_compiler_problems()
 find_package(LibStdCpp)
 
 # Python is first referenced in gmxVersionInfo, so we perform the search early
@@ -268,8 +272,6 @@ gmx_option_multichoice(
     "AUTO"
     AUTO None SSE2 SSE4.1 AVX_128_FMA AVX_256 AVX2_256 AVX2_128 AVX_512 AVX_512_KNL ARM_NEON_ASIMD ARM_SVE IBM_VSX Reference)
 
-include(gmxTestIntelLLVM)
-
 if (GMX_INTEL_LLVM)
     set(GMX_FFT_LIBRARY_DEFAULT "mkl")
 else()
@@ -440,10 +442,6 @@ gmx_c_flags()
 # might not also work for C++ compilation.
 set(EXTRA_C_FLAGS "")
 set(EXTRA_CXX_FLAGS "")
-
-# Run through a number of tests for buggy compilers and other issues
-include(gmxTestCompilerProblems)
-gmx_test_compiler_problems()
 
 # Implement double-precision option. This is complicated because we
 # need installed headers to use the precision mode of the build that
@@ -979,9 +977,9 @@ else()
     # Set the RPATH as relative to the executable location to make the
     # binaries relocatable.
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin") #Assume OS X >=10.5
-        set(CMAKE_INSTALL_RPATH "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
+        list(APPEND CMAKE_INSTALL_RPATH "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
     else()
-        set(CMAKE_INSTALL_RPATH "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+        list(APPEND CMAKE_INSTALL_RPATH "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
     endif()
     set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
     set(CMAKE_MACOSX_RPATH 1)
